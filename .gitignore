@@ -4,9 +4,13 @@
 
 results/*/*.npz
 results/*/*.npy
+results/results_initial/
 results/*.h5
 results/*/*.h5
-results/*/*.json
+results/*/*/*.h5
+results/*/mcmc*.json
+results/*/prediction*.json
+results/*/fit*.json
 results/*/*.tex
 results/*.hdf
 results/*.pkl

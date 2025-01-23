@@ -202,7 +202,7 @@ def write_tex_table(df, df_round, filename, filter_row, format_value, block_lvl)
 
 
 def main_mcmc_params():
-    header_values = [percentile_symbol(5), "Best", percentile_symbol(95)]
+    header_values = [percentile_symbol(2.5, place=1), "Best", percentile_symbol(97.5, place=1)]
     models_files_dict = {
         "6Y TCR/TCR, initial AKPR": "../results/mcmc/mcmc_analysis_shp1.json",
         "6Y TCR/TCR, revised AKPR": "../results/mcmc/mcmc_analysis_akpr_i.json",
@@ -280,5 +280,5 @@ def main_surface_molec_numbers():
 
 
 if __name__ == "__main__":
-    #main_mcmc_params()
+    main_mcmc_params()
     main_surface_molec_numbers()

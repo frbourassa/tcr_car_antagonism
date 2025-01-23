@@ -100,7 +100,7 @@ def equation_one_cm_types(cmii, ii, cmnorms, ratesp, tausp, c_tot_sols, stot, np
 
 # Main functions solving the SHP-1 model with multiple receptor types.
 def steady_akpr_i_receptor_types(ratesp, tausp, lsp, ri_tots, nparams):
-    """Solving for the steady_state of the SHP-1 model with two
+    r"""Solving for the steady_state of the SHP-1 model with two
     different receptors, each with its own ligand.
     So, we need to solve for I_tot, C_tot and D_tot first.
 
@@ -217,7 +217,10 @@ def steady_akpr_i_receptor_types(ratesp, tausp, lsp, ri_tots, nparams):
     if number_implicit == 1:
         if abs(cm_impli - complexes[impli][ms[impli]]) > 1e-6:
             print("Difference in implicit solution and final calculated C_m:",
-                    cm_impli, complexes[impli][ms[impli]])
+                    cm_impli, complexes[impli][ms[impli]],
+                    "for parameter values as follows:")
+            print("ratesp:", ratesp, "\ntausp:", tausp, "\nlsp:", lsp,
+                    "\nri_tots:", ri_tots, "\nnparams:", nparams)
     # Add the vector of S values to the returned variables
     complexes[-1] = ivec
 
@@ -246,7 +249,7 @@ def get_threshold(nparams, ratep, ri_tots, tau_c=3.0):
 # output total output of all receptor types, given thresholds on the C_N
 # and the output of steady_akpr_i_receptor_types
 def compute_zoutput_from_complexes(complexes, thresholds, pwr=2):
-    """ Compute \sum_i Z_i, where Z_i = C^i_N/(C^i_N + \theta^i_N) is the output
+    r""" Compute \sum_i Z_i, where Z_i = C^i_N/(C^i_N + \theta^i_N) is the output
     of receptor type i.
     """
     c_n_vec = np.asarray([complexes[i][-1] for i in range(len(complexes)-1)])

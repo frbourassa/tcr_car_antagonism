@@ -1,12 +1,13 @@
 """
 Functions to prepare data for MCMC fitting of antagonism ratios.
+Code for generalization of the model to other cell lines than OT1-CAR T cells
+is in separate modules.
 
 @author: frbourassa
 December 2022
 """
 import numpy as np
 import scipy as sp
-from scipy import stats
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -15,32 +16,25 @@ import os
 
 # Import local functions
 from mcmc.utilities_tcr_tcr_antagonism import (
-    assemble_kf_vals,
-    check_fit_model_antagonism,
-    confidence_model_antagonism
+    sample_log_student,
+    get_std_from_ci
 )
 from mcmc.plotting import (
     handles_properties_legend,
     prepare_hues,
     prepare_styles,
-    prepare_markers,
     prepare_subplots,
     data_model_handles_legend,
     change_log_ticks
-    )
+)
 from mcmc.mcmc_analysis import find_best_grid_point
 from utils.preprocess import (
     groupby_others,
     geo_mean_levels,
     ln10,
-    time_dd_hh_mm_ss,
-    geo_mean,
-    geo_mean_apply,
     read_conc_uM,
     write_conc_uM,
-    hill,
     michaelis_menten,
-    loglog_michaelis_menten,
     inverse_michaelis_menten,
     string_to_tuple
 )
@@ -95,15 +89,8 @@ def prepare_car_antagonism_data(data, mm_params, pep_tau_map,
     def michaelis_menten_fitted(conc_axis):
         return michaelis_menten(conc_axis, *mm_params)
 
-    # Keep only experiments 9 and 14, which are high-quality.
-    # "20211027-OT1_CAR_11" is not too bad, but only 1 uM
-    # and small amplitude compared to usual
-    with open(os.path.join(data_fold, "dataset_selection.json"), "r") as h:
-        good_dsets = json.load(h).get("good_car_tcr_datasets")
-    df = data.loc[data.index.isin(good_dsets, level="Data")]
-
     # Create a data-spleen level
-    df = df.stack().to_frame()
+    df = data.stack().to_frame()
     df["Data-spleen"] = (df.index.get_level_values("Data") + "-"
                         + df.index.get_level_values("Spleen"))
     df = df.set_index("Data-spleen", append=True)
@@ -124,8 +111,6 @@ def prepare_car_antagonism_data(data, mm_params, pep_tau_map,
 
     # Compute time series of ratios. "No TCR antigen" is always
     # encoded as TCR_Antigen=None, with a copy for each TCR_Antigen_Density
-    # TODO: reconsider processing of the no-antagonist conditions when
-    # there are duplicates that could introduce a bias.
     df_fit = df / df.xs("None", level="TCR_Antigen")
     df_fit = df_fit[0]
     df_fit.name = "Ratio"
@@ -236,7 +221,90 @@ def load_tcr_car_molec_numbers(molec_counts_fi, mtc, **kwargs):
     return tcr_number, car_number, cd19_l, l_conc_mm_params, pep_tau_map_ot1
 
 
-def load_tcr_tcr_akpr_fits(res_file, analysis_file, klim=2, wanted_kmf=None):
+def load_tcr_car_molec_numbers_ci(molec_counts_fi, mtc, **kwargs):
+    """
+    Standard loading of surface molecule parameters for TCR-CAR antagonism
+    for 1- or 3-ITAM CARs. Also load standard deviation of the TCR, CAR, CAR
+    and TCR antigens (MHC), and of the loading K_D parameter.
+    Also load the number of d.o.f. on which the mean estimators are based.
+
+    Args:
+        molec_counts_fi (str): path to file containing surface molecule summary stats
+        mtc (str): metric/statistic to use, such as "Geometric mean"
+    Keyword args:
+        tcell_type (str): "OT1_CAR" by default,
+            "OT1_Naive" or "OT1_Blast" are also available.
+        tumor_type (str): "E2aPBX_WT" by default,
+            also "B16", "Nalm6", "PC9", "BEAS2B" are available.
+        tumor_antigen (str): "CD19" by default, varies for different tumors
+        data_fold (str): path to main data folder. Typically ../data/
+            because MCMC scripts in subfolder.
+        mhc_name (str): default "MHC", can be "HLA-A2" for instance.
+
+    Returns:
+        tcr_number (float): number of TCRs per CAR T cell
+        car_number (float): number of CARs per CAR T cell
+        cd19_l (float): number of CD19 molecules per E2aPBX cell
+        l_conc_mm_params (list of 2 floats): [max_mhc, pulse_kd]
+            max_mhc (float): total number of MHC per E2aPBX
+            pulse_kd (float): antigen pulse dissociation constant
+        pep_tau_map_ot1 (dict): binding time estimated from KPR scaling law
+            for each OVA variant peptide.
+        all_stds (list of 5 floats): std on TCR, CAR, CD19, MHC, K_D
+        all_dofs (list of 5 floats): number dofs for TCR, CAR, CD19, MHC, KD
+    """
+    tcell_type = kwargs.get("tcell_type", "OT1_CAR")
+    tumor_type = kwargs.get("tumor_type", "E2aPBX_WT")
+    tumor_antigen = kwargs.get("tumor_antigen", "CD19")
+    data_fold = kwargs.get("data_fold", "../data/")
+    mhc_name = kwargs.get("mhc_name", "MHC")
+
+    molec_stats = pd.read_hdf(molec_counts_fi, key="surface_numbers_stats")
+    # Number of TCR per T cell
+    tcr_number =  molec_stats.loc[(tcell_type, "TCR"), mtc]
+
+    # Recover standard deviation of the mean estimator from the CI
+    tcr_std, n_dofs_tcr = get_std_from_ci(molec_stats, (tcell_type, "TCR"), mtc)
+
+    # Number of CARs per T cell (assume same for 1- and 3-ITAM, data for 3)
+    try:
+        car_number = molec_stats.loc[(tcell_type, "CAR"), mtc]
+        car_std, n_dofs_car = get_std_from_ci(molec_stats, (tcell_type, "CAR"), mtc)
+    except KeyError:
+        car_number = molec_stats.loc[("OT1_CAR", "CAR"), mtc]
+        car_std, n_dofs_car = get_std_from_ci(molec_stats, ("OT1_CAR", "CAR"), mtc)
+
+    # Number of MHCs per APC (B6 splenocyte)
+    max_mhc = molec_stats.loc[(tumor_type, mhc_name), mtc]
+    mhc_std, n_dofs_mhc = get_std_from_ci(molec_stats, (tumor_type, mhc_name), mtc)
+    cd19_l = molec_stats.loc[(tumor_type, tumor_antigen), mtc]
+    cd19_std, n_dofs_cd19 = get_std_from_ci(molec_stats, (tumor_type, tumor_antigen), mtc)
+
+    # Pulse concentration to ligand numbers conversion:
+    # based on RMA-S 2019-2020 data
+    mhc_pulse_kd = pd.read_hdf(molec_counts_fi, key="mhc_pulse_kd")
+    # This pd.Series also contains covariance of the K_D parameter fit
+    pulse_kd = mhc_pulse_kd[mtc]
+    kd_std, n_dofs_kd = get_std_from_ci(mhc_pulse_kd, None, mtc)
+
+    # Use average parameters.
+    l_conc_mm_params_dict = {"amplitude":max_mhc, "ec50":pulse_kd}
+    # amplitude, EC50
+    l_conc_mm_params = [max_mhc, pulse_kd]
+
+    # Mapping tau and EC50s
+    with open(os.path.join(data_fold, "pep_tau_map_ot1.json"), "r") as handle:
+        pep_tau_map_ot1 = json.load(handle)
+
+    all_stds = [tcr_std, car_std, cd19_std, mhc_std, kd_std]
+    all_dofs = [n_dofs_tcr, n_dofs_car, n_dofs_cd19, n_dofs_mhc, n_dofs_kd]
+    return (tcr_number, car_number, cd19_l, l_conc_mm_params, pep_tau_map_ot1,
+            all_stds, all_dofs)
+
+
+def load_tcr_tcr_akpr_fits(
+        res_file, analysis_file, klim=2, wanted_kmf=None
+    ):
     """ Load all model parameters fitted on TCR-TCR antagonism data """
     # We need the following.
     # TCR parameters: phi, kappa, cmthresh, S0p, kp, psi0, gamma_tt
@@ -279,10 +347,230 @@ def load_tcr_tcr_akpr_fits(res_file, analysis_file, klim=2, wanted_kmf=None):
 
 
 ### ANALYZING MCMC RUNS ###
+
+# Model CI generation, special case for TCR/CAR to propagate uncertainties
+# from antigen numbers, receptor numbers, prediction factors for ITAM numbers.
+def confidence_model_antagonism_car(
+        model_panel, psamples, pbest, grid_pt, df_ratio, df_err, #psamples_tcr,
+        other_args=(), n_taus=101, n_samp=1000, seed=None, antagonist_lvl="Antagonist",
+        l_conc_mm_params=[1.0, 0.1], molec_stds=[0.1,]*5, molec_dofs=[1000,]*5,
+        factors_stds=None
+    ):
+    """ Receive parameter samples and a point on the grid search,
+    as well as a function evaluating antagonism panel for some model,
+    and compute the confidence interval of model predictions compared to data.
+
+    Rigorously, the mean TCR, MHC numbers and K_D must be sampled from
+    a Student's t distribution, with scale given by the standard deviations
+    provided in tcr_num_std and mm_params_std and numbers of degrees of freedom
+    in dofs_rcpt_mhc_car_kd.
+
+    If you want to use this function with other CAR T cell or tumor cell lines
+    change the corresponding model parameters in the other_args (cost args)
+    passed as an argument here. The elements in other_args are passed as
+    individual arguments to model_panel.
+
+    Args:
+        model_panel (callable): function evaluating model antagonism ratio
+            for given (pvec, grid_pt, *other_args, df_ratio.index).
+        psamples (np.ndarray): sampled parameters array,
+            shaped [param, nwalkers, nsamples]
+        pbest (np.ndarray): best parameter sample
+        grid_pt (tuple of ints): integer parameters after grid search.
+        df_ratio (pd.DataFrame): antagonism ratio points
+        df_err (pd.DataFrame): antagonism ratio error bars.
+        #psamples_tcr (np.ndarray): sampled TCR/TCR parameter array,
+        #    shaped [param_tcr, nwalkers_tcr, nsamples_tcr]
+        other_args (tuple): other arguments passed to model_panel.
+        seed (np.random.SeedSequence or int): random number generator seed
+        n_samp (int): number of samples to draw for confidence intervals
+        antagonist_lvl (str): which level contains the antagonist tau,
+            will be dropped and replaced by a range of taus.
+        l_conc_mm_params (list of 2 floats): mean MHC number per APC
+            and peptide loading EC50 mean estimator.
+        tcr_num_std (float): standard deviation of the mean estimator
+            of the TCR number per T cell
+        molec_stds (list of 5 floats): standard deviation of the mean estimators
+            for the TCR, CAR, CD19, MHC, and loading K_D
+        molec_dofs (list of 5 ints): the number of degrees of freedom
+            (cell or experimental repeats) from which the mean estimators
+            for the TCR, CAR, CD19, MHC, and loading K_D are calculated.
+        factors_stds (list of [list, float]): standard deviation of the
+            estimated correction factors for [tcr_ampli, car_ampli]
+            and TCR threshold.
+
+    Returns:
+        df_stats (pd.DataFrame): statistics on model antagonism predictions,
+            including 90 % CI, median, best fit, as a function of tau.
+    """
+    rgen = np.random.default_rng(seed)
+
+    # Recover the pulse concentrations from the ligand numbers computed
+    # with the best Michaelis-Menten parameters. These pulse concentrations
+    # will correspond to slightly different ligand numbers for each
+    # l_conc_mm_params values sampled when bootstrapping the CI.
+    best_antag_nums = df_ratio.index.get_level_values("TCR_Antigen_Density").unique()
+    antag_pulses = inverse_michaelis_menten(best_antag_nums, *l_conc_mm_params)
+    antag_l_conc_map = dict(zip(best_antag_nums, antag_pulses))
+    inv_l_antag_map = dict(zip(antag_l_conc_map.values(), antag_l_conc_map.keys()))
+
+    # Create continuous antagonist tau range, add pulse concentration levels
+    # to be converted to different ligand numbers for every sample.
+    new_tau_range = np.linspace(0.001, df_ratio.index.get_level_values(antagonist_lvl).max(), n_taus)
+    old_index = df_ratio.index.droplevel(antagonist_lvl).unique()
+    if isinstance(old_index, pd.MultiIndex):
+        product_tuples = [tuple(a)+(b,) for b in new_tau_range for a in old_index]
+    elif isinstance(old_index, pd.Index):
+        product_tuples = [(a,)+(b,) for b in new_tau_range for a in old_index]
+    new_names = list(old_index.names) + [antagonist_lvl]
+    # Turn into a DataFrame without an index to better add and map index levels
+    # to deal with pulse concentration to ligand number conversions
+    new_index = pd.MultiIndex.from_tuples(product_tuples, names=new_names)
+    df_idx = new_index.to_frame()
+    df_idx["TCR_Antigen_Pulse"] = df_idx["TCR_Antigen_Density"].map(antag_l_conc_map)
+
+    # Replace the ri_tot default by a local list to be modified each iteration
+    # For TCR/CAR, other_args = list(cost_args_loaded) + [[tcr_ampli, car_ampli], tcr_thresh_fact]
+    # and cost_args_loaded = tcr_car_params, tcr_car_ritots, tcr_car_nmf, cd19_tau_l
+    # and tcr_car_params = phi_tcr, kappa_tcr, cmthresh_tcr, S0p, kp, psi0_tcr, gamma_tt
+    # then phi_car, kappa_car, gamma_cc, psi0_car
+    # and tcr_car_ritots = [r_tcr, r_car, I_tot]
+    # Replace elements in other_args by local copies
+    other_args_ci = list(other_args)  # Local list, elements in it are refs
+    other_args_ci[1] = list(other_args_ci[1])  # ri_tots list: r_tcr, i_tot, r_car
+    other_args_ci[3] = list(other_args_ci[3])  # cd19_tau_l
+    if factors_stds is not None:  # prediction factors
+        other_args_ci[-2] = list(other_args_ci[-2])
+        other_args_ci[-1] = float(other_args_ci[-1])
+    # From the loaded cost_args, extract TCR, CAR, CD19 numbers
+    tcr_num_estim = other_args[1][0]
+    car_num_estim = other_args[1][2]
+    cd19_l = other_args[3][1]
+
+    new_cols = pd.RangeIndex(n_samp)
+    # Replace TCR_Antigen_Density with TCR_Antigen_Pulse
+    df_model_idx = df_idx.set_index(
+            ["TCR_Antigen_Pulse"] + list(new_index.names[1:])).index
+    df_model = pd.DataFrame(np.zeros([len(new_index), n_samp]),
+                    index=df_model_idx, columns=new_cols)
+
+    # Randomly sample parameters from the MCMC chain
+    samp_choices = rgen.choice(psamples.shape[1]*psamples.shape[2], size=n_samp, replace=True)
+    s_choices = samp_choices // psamples.shape[1]
+    w_choices = samp_choices % psamples.shape[1]
+
+    # Student's t samples for the TCR, CAR, CD19, MHC, and K_D mean estimators
+    tcr_num_std, car_num_std, cd19_l_std, max_mhc_std, kd_std = molec_stds
+    n_dofs_tcr, n_dofs_car, n_dofs_cd19, n_dofs_mhc, n_dofs_kd = molec_dofs
+    tcr_num_samples = sample_log_student(
+        tcr_num_estim, tcr_num_std, rgen, n_samp, n_dofs_tcr, base=10.0
+    )
+    car_num_samples = sample_log_student(
+        car_num_estim, car_num_std, rgen, n_samp, n_dofs_car, base=10.0
+    )
+    cd19_l_samples = sample_log_student(
+        cd19_l, cd19_l_std, rgen, n_samp, n_dofs_cd19, base=10.0
+    )
+    mhc_num_samples = sample_log_student(
+        l_conc_mm_params[0], max_mhc_std, rgen, n_samp, n_dofs_mhc, base=10.0
+    )
+    load_kd_samples = sample_log_student(
+        l_conc_mm_params[1], kd_std, rgen, n_samp, n_dofs_kd, base=10.0
+    )
+    if factors_stds is not None:
+        factors_a = other_args[-2]
+        factor_th = other_args[-1]
+        tcr_ampli_samples = factors_a[0] + factors_stds[0][0]*rgen.standard_normal(size=n_samp)
+        car_ampli_samples = factors_a[1] + factors_stds[0][1]*rgen.standard_normal(size=n_samp)
+        tcr_thresh_samples = factor_th + factors_stds[1]*rgen.standard_normal(size=n_samp)
+    else:
+        factors, tcr_ampli_samples = None, None
+        car_ampli_samples, tcr_thresh_samples = None, None
+
+    # Compute the antagonism ratio panel for each sample parameter set
+    # The last levels should be l_ag, l_antag, antag_tau,
+    # but previous levels can be the pulse concentrations
+
+    # last two levels should be L, tau: fine to prepend TCR_Antigen_Pulse
+    full_idx_order = ["TCR_Antigen_Pulse"] + list(new_index.names)
+    for i in range(n_samp):
+        nw, ns = w_choices[i], s_choices[i]
+        pvec = psamples[:, nw, ns]
+        # Place new TCR, CAR, CD19 numbers in other_args_ci
+        # ri_tots: TCR, I_tot, CAR
+        other_args_ci[1] = [tcr_num_samples[i], other_args[1][1], car_num_samples[i]]
+        other_args_ci[3] = (other_args[3][0], cd19_l_samples[i])
+        if factors_stds is not None:
+            other_args_ci[-2] = [tcr_ampli_samples[i], car_ampli_samples[i]]
+            other_args_ci[-1] = tcr_thresh_samples[i]
+        # Prepare the new index with the sampled mhc_num and load_kd
+        df_idx["TCR_Antigen_Density"] = michaelis_menten(
+            df_idx["TCR_Antigen_Pulse"], mhc_num_samples[i], load_kd_samples[i]
+        )
+
+        new_index_ci = df_idx.set_index(full_idx_order).index
+        try:
+            df_model_i = model_panel(pvec, grid_pt, *other_args_ci, new_index_ci)
+        except RuntimeError:
+            df_model_i = np.nan
+        else:
+            df_model_i = df_model_i.droplevel(
+                ["TCR_Antigen_Density"], axis=0
+            )
+        df_model[i] = df_model_i
+    print("Number NaN samples for {}:".format(grid_pt),
+                df_model.isna().iloc[0, :].sum())
+
+    # Compute model output for best parameter vector.
+    # Need an index with pulse concentrations and the default L numbers
+    df_idx["TCR_Antigen_Density"] = df_idx["TCR_Antigen_Pulse"].map(inv_l_antag_map)
+    new_index_ci = df_idx.set_index(full_idx_order).index
+    try:
+        sr_best = model_panel(pbest, grid_pt, *other_args, new_index_ci)
+    except RuntimeError:
+        sr_best = np.nan
+    else:
+        sr_best = sr_best.droplevel(["TCR_Antigen_Density"], axis=0)
+
+    # Compute statistics of the ratios on a log scale, then back to linear scale
+    stats = ["percentile_2.5", "median", "mean", "geo_mean", "best", "percentile_97.5"]
+    df_stats = pd.DataFrame(np.zeros([df_model.shape[0], len(stats)]),
+                index=df_model_idx, columns=stats)
+    df_stats["mean"] = np.log(df_model.mean(axis=1))
+    df_model = np.log(df_model)
+    df_stats["percentile_2.5"] = df_model.quantile(q=0.025, axis=1)
+    df_stats["median"] = df_model.quantile(q=0.5, axis=1)
+    df_stats["geo_mean"] = df_model.mean(axis=1)
+    df_stats["best"] = np.log(sr_best)
+    df_stats["percentile_97.5"] = df_model.quantile(q=0.975, axis=1)
+    df_stats = np.exp(df_stats)
+
+    # Put back default ligand numbers corresponding to Pulse levels for
+    # output compatibility with other panel functions
+    df_stats.index = (df_stats.index
+        .rename(names="TCR_Antigen_Density", level="TCR_Antigen_Pulse")
+    )
+    df_stats = (df_stats
+        .rename(inv_l_antag_map, axis=0, level="TCR_Antigen_Density")
+    )
+
+    print("Finished computing model predictions for {}".format(grid_pt))
+    return df_stats
+
+
 # check_fit_model_car_antagonism: same as check_fit_model_antagonism
 # written for TCR-TCR, just pass antagonist_lvl = "TCR_Antigen"
+from mcmc.utilities_tcr_tcr_antagonism import check_fit_model_antagonism
 
-def plot_fit_car_antagonism(df_ratio, df_model, l_conc_mm_params, df_err, cost=None):
+
+def plot_fit_car_antagonism(
+        df_ratio, df_model, l_conc_mm_params, df_err, cost=None, model_ci=None,
+    ):
+     # Aesthetic parameters
+    with open(os.path.join("..", "results", "for_plots", 
+            "perturbations_palette.json"), "r") as f:
+        pert_palette = json.load(f)
+    pert_palette["None"] = [0., 0., 0., 1.]  # Black
     df_model_data = pd.concat({"Data":df_ratio, "Model": df_model}, names=["Source"])
     df_model_data.name = "Antagonism ratio"
 
@@ -293,17 +581,18 @@ def plot_fit_car_antagonism(df_ratio, df_model, l_conc_mm_params, df_err, cost=N
         return (d.rename(reverse_mm_fitted, axis=0, level="TCR_Antigen_Density")
                  .rename(write_conc_uM, axis=0, level="TCR_Antigen_Density")
                 )
-    df_model_data = renamer(df_model_data)
-    df_err = renamer(df_err)
-    df_model_data = df_model_data.sort_index()
-    df_err = df_err.sort_index()
+    df_model_data = renamer(df_model_data).sort_index()
+    df_err = renamer(df_err).sort_index()
+    if model_ci is not None:
+        model_ci = renamer(model_ci).sort_index()
 
     # Prepare palette, columns, etc.
     available_antagconc = list(df_model_data.index
                         .get_level_values("TCR_Antigen_Density").unique())
-    available_antagconc = sorted(available_antagconc, key=read_conc_uM)
-
-    palette = sns.color_palette("BuPu", n_colors=len(available_antagconc))
+    available_antagconc = sorted(available_antagconc, key=read_conc_uM, reverse=True)
+    palette = sns.dark_palette(pert_palette["AgDens"],
+                               n_colors=len(available_antagconc))
+    palette[0] = (0.0,)*3 + (1.0,)
     palette = {a:c for a, c in zip(available_antagconc, palette)}
 
     marker_bank = ["o", "s", "^", "X", "P", "*"]
@@ -330,10 +619,19 @@ def plot_fit_car_antagonism(df_ratio, df_model, l_conc_mm_params, df_err, cost=N
         conc_key[0] = "Model"
         model_pts = np.log2(df_model_data.loc[tuple(conc_key)]).sort_index()
         err_pts = df_err.loc[tuple(conc_key[1:])].sort_index()
+        if model_ci is not None:
+            percentiles = sorted(list(model_ci.columns), 
+                                key=lambda x: float(x.split("_")[-1]))
+            model_ci_low = np.log2(model_ci.loc[tuple(conc_key[1:]), percentiles[0]]).sort_index()
+            model_ci_hi = np.log2(model_ci.loc[tuple(conc_key[1:]), percentiles[1]]).sort_index()
 
         hue = palette.get(antag_conc)
         mark = markers.get(antag_conc)
         style = linestyles.get(antag_conc)
+        if model_ci is not None:
+            # First shade confidence interval
+            ax.fill_between(model_ci_low.index.get_level_values("TCR_Antigen").values,
+                        model_ci_low.values, model_ci_hi.values, color=hue, alpha=0.25)
         errbar = ax.errorbar(data_pts.index.get_level_values("TCR_Antigen").values, data_pts.values,
                    yerr=err_pts.values, marker=mark, ls="none", color=hue, mfc=hue, mec=hue)
         li, = ax.plot(model_pts.index.get_level_values("TCR_Antigen").values, model_pts.values,
@@ -365,22 +663,6 @@ def plot_fit_car_antagonism(df_ratio, df_model, l_conc_mm_params, df_err, cost=N
                loc="upper left", bbox_to_anchor=(0.975, 0.95), frameon=False)
 
     return fig, ax
-
-
-# Function to check TCR-CAR model outputs
-def check_model_output_tcr_car(model, rates, rstot, nmf):
-    raise NotImplementedError()
-    # Define the range of L_i, tau_i to test
-    tau_range = np.asarray([10.0, 7.0, 5.0, 3.0, 2.0])
-    l_range = np.logspace(0, 5, 101)
-    # Index each output array [l2, tau2]
-    output = np.zeros([tau_range.size, l_range.size])
-    for i in range(output.shape[0]):  # over tau
-        taup = tau_range[i]
-        for j in range(output.shape[1]):  # over L
-            lp = l_range[j]
-            output[i, j] = model(rates, taup, lp, rstot, nmf)[nmf[0]]
-    return l_range, tau_range, output
 
 
 ### PREDICT FROM MCMC RUNS ###
@@ -417,7 +699,8 @@ def perturb_decoder(x):
 
 def plot_predict_car_antagonism(df_data, df_model, l_conc_mm_params, df_err):
     # Aesthetic parameters
-    with open("../results/for_plots/perturbations_palette.json", "r") as f:
+    with open(os.path.join("..", "results", "for_plots", 
+            "perturbations_palette.json"), "r") as f:
         perturb_palette = json.load(f)
     perturb_palette["None"] = [0., 0., 0., 1.]  # Black
     # Rename concentrations for nicer plotting
@@ -505,7 +788,7 @@ def plot_predict_car_antagonism(df_data, df_model, l_conc_mm_params, df_err):
                 assert len(mod_loc2.index.get_level_values(sty_lvl).unique()) == 1
                 sty_val = mod_loc2.index.get_level_values(sty_lvl)[0]
                 xvals = mod_loc2.index.get_level_values(x_lvl).values
-                ax.fill_between(xvals, mod_loc2["percentile_5"], mod_loc2["percentile_95"],
+                ax.fill_between(xvals, mod_loc2["percentile_2.5"], mod_loc2["percentile_97.5"],
                     color=palette[h], alpha=0.3)
                 lbl = perturb_decoder(h)
                 ax.plot(xvals, mod_loc2["best"], color=palette[h],

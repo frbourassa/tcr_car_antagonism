@@ -4,8 +4,7 @@
 October 2021
 """
 import numpy as np
-import scipy as sp
-from scipy.optimize import root_scalar, root as rootsolve
+from scipy.optimize import root_scalar
 
 
 ### CAR+TCR MODEL ###
@@ -98,8 +97,8 @@ def solution_francois2013_single_type(ratep, taup, Lp, Rp, iparams, nparams, pre
             solution to nonlinear equations
 
     Returns:
-        complexes (np.ndarray): 1D array of complexes and S, ordered
-            [C_0, C_1, ..., C_N, S]
+        complexes (np.ndarray): 1D array of complexes and I, ordered
+            [C_0, C_1, ..., C_N, I]
     """
     kappap = ratep[-1]
     C_tot_sol = solution_CTs(Lp, taup, kappap, Rp)
@@ -183,7 +182,7 @@ def complexes_given_I(i, Ip, ratesp, taups, CTsolns, Nps):
 def solution_francois2013_many_receptor_types(ratesp, tausp, Lsp, Rsp, iparams, nparams, precision=1e-6):
     """Solving for the steady-state of the Francois 2013 model with two
     different receptors, each with its own ligand.
-    So, we need to solve for S, C_tot and D_tot first.
+    So, we need to solve for I, C_tot and D_tot first.
 
     Args:
         ratesp (list of np.ndarrays): phis, bs, gammas, kappas
@@ -205,14 +204,14 @@ def solution_francois2013_many_receptor_types(ratesp, tausp, Lsp, Rsp, iparams, 
         complexes (np.ndarray): list of 1D arrays of complexes or S, ordered
             [ [C_0, C_1, ..., C_N],
               [D_0, D_1, ..., D_N],
-              S
+              I
             ]
     """
     # Exploit the vector-compatible form of the function solving for C_Ts
     kappasp = ratesp[-1]
     C_tot_sols = solution_CTs(Lsp, tausp, kappasp, Rsp)
 
-    # Solve for S. Range of solutions between 0 and I_tot
+    # Solve for I. Range of solutions between 0 and I_tot
     # Initial guess proportional to each C_T, total of I_tot/3.
     initial_i_guess = 0.33 * iparams[0]
     # TODO: treat special case of one receptor kind separately (check length of arrays)
@@ -221,7 +220,7 @@ def solution_francois2013_many_receptor_types(ratesp, tausp, Lsp, Rsp, iparams, 
                     args=(ratesp, tausp, C_tot_sols, iparams, nparams)).root
 
     # Compute all complexes for each kind of receptor
-    complexes = []  # List of arrays and S
+    complexes = []  # List of arrays and I
     for i in range(len(tausp)):
         c_ns = complexes_given_I(i, Isol, ratesp, tausp, C_tot_sols, nparams[0])
         complexes.append(c_ns)

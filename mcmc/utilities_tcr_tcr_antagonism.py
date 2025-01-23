@@ -12,16 +12,15 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import json
 import os
+import warnings  # pandas has annoying futurewarnings about stack
+# even though we call it in a way compatible with the future 3.0 version
 
 from mcmc.plotting import data_model_handles_legend, change_log_ticks
 from utils.preprocess import (
-    geo_mean,
     geo_mean_apply,
     read_conc_uM,
     write_conc_uM,
-    hill,
     michaelis_menten,
-    loglog_michaelis_menten,
     inverse_michaelis_menten
 )
 
@@ -38,7 +37,9 @@ def prepare_data(data, mm_params, pep_tau_map):
 
     # Remove missing time points and format as Series to use groupby later
     # to average over time
-    df_fit = data.stack("Time").dropna().iloc[:, 0]
+    with warnings.catch_warnings():
+        warnings.simplefilter(action='ignore', category=FutureWarning)
+        df_fit = data.stack("Time").dropna().iloc[:, 0]
 
     # The 1nM agonist, 1nM antagonist but antagonist=None is off in
     # the experiment SingleCell_Antagonism_3. Probably due to this condition
@@ -128,7 +129,9 @@ def prepare_data_6f(data, mm_params, pep_tau_map):
 
     # Group by varying parameters, treat the rest as replicates
     grouplvls = ["AgonistConcentration", "AntagonistConcentration", "Antagonist"]
-    df_fit = df_fit.stack("Time").dropna()  # Remove missing time points
+    with warnings.catch_warnings():
+        warnings.simplefilter(action='ignore', category=FutureWarning)
+        df_fit = df_fit.stack("Time").dropna()  # Remove missing time points
     df_gp = df_fit.groupby(grouplvls)
 
     # Estimate 95 % confidence interval based on t_crit*standard error on mean
@@ -199,6 +202,115 @@ def load_tcr_tcr_molec_numbers(molec_counts_fi, mtc, **kwargs):
     return tcr_number, l_conc_mm_params, pep_tau_map_ot1
 
 
+def get_std_from_ci(molec_stats, key, mtc, alph=0.05):
+    """
+    Recover standard deviation of the mean estimator from the CI,
+    assuming an underlying log-Gaussian distribution, which makes the mean
+    estimator follow a Student's t distribution, because the variance
+    of the underlying Gaussian is unknown, having only its estimator S.
+    The variance of the mean estimator is S / sqrt(n), where S is
+    related to the unbiased estimator of the underlying Gaussian variance;
+    it is related to the CI of the mean estimator at level 1-alpha as:
+    CI(1-alpha/2) - CI(alpha/2) = 2 * t^{n-1}_{alpha/2} S / sqrt(n)
+    where n is the number of samples,
+    Use the number of DOFs (cells) to get correct Student's t critical value
+    """
+    if key is not None:
+        n_dofs = molec_stats.at[key, "dof"]
+    else:
+        n_dofs = molec_stats.at["dof"]
+    alph2 = 0.5 * alph
+    # The factor 2 is to divide the 2.5-97.5% interval in two
+    # each half on either side of the median is t_crit * standard dev.
+    factor_times_sigma = 2.0 * sp.stats.t.ppf(1.0 - alph2, n_dofs-1)
+    ci_up_lbl = "CI {}".format(1.0 - alph2)
+    ci_lo_lbl = "CI {}".format(alph2)
+    if key is not None:
+        ci_upper = molec_stats.at[key, mtc + " " + ci_up_lbl]
+        ci_lower = molec_stats.at[key, mtc + " " + ci_lo_lbl]
+    else:
+        ci_upper = molec_stats.at[ci_up_lbl]
+        ci_lower = molec_stats.at[ci_lo_lbl]
+    if "Geometric" in mtc:
+        ci_range = np.log10(ci_upper) - np.log10(ci_lower)
+    else:
+        ci_range = ci_upper - ci_lower
+    scale_std = ci_range / factor_times_sigma
+    return scale_std, n_dofs
+
+
+def load_tcr_tcr_molec_numbers_ci(molec_counts_fi, mtc, **kwargs):
+    """
+    Standard loading of surface molecule parameters for TCR-TCR antagonism,
+    both old and new model, and also 6F T cells. Also load standard
+    deviation of the TCR and MHC numbers and of the loading K_D parameter.
+
+    Args:
+        molec_counts_fi (str): path to file containing surface molecule summary stats
+        mtc (str): metric/statistic to use, such as "Geometric mean"
+    Keyword args:
+        data_fold (str): path to main data folder. Typically ../data/
+            because MCMC scripts in subfolder.
+        tcell_type (str): "OT1_Naive" by default,
+            also "OT1_CAR" and "OT1_Blast" available.
+    Returns:
+        tcr_number (float): number of TCRs per naive OT-1 T cell
+        l_conc_mm_params (list of 2 floats): [max_mhc, pulse_kd]
+            max_mhc (float): total number of MHC per B6 splenocyte
+            pulse_kd (float): antigen pulse dissociation constant
+        pep_tau_map_ot1 (dict): binding time estimated from KPR scaling law
+            for each OVA variant peptide.
+        tcr_log10_std (float): standard deviation of the mean estimator,
+            either in log10 scale if mtc is "Geometric mean", or in linear
+            scale if mtc is just "Mean" or something else.
+        l_conc_mm_params_std (list of 2 floats): standard deviations of the
+            mean estimators of the total MHC number and the loading EC50,
+            either in log10 scale or linear scale, depending on mtc choice.
+        dofs_tcr_mhc_kd (list of 3 ints): the number of degrees of freedom
+            (cell or experimental repeats) from which the mean estimators
+            for the TCR number, MHC number, and loading EC50 are derived.
+    """
+    data_fold = kwargs.get("data_fold", "../data/")
+    tcell_type = kwargs.get("tcell_type", "OT1_Naive")
+
+    molec_stats = pd.read_hdf(molec_counts_fi, key="surface_numbers_stats")
+    # Number of TCR per T cell
+    tcr_number =  molec_stats.at[(tcell_type, "TCR"), mtc]
+
+    # Recover standard deviation of the mean estimator from the CI
+    tcr_log10_std, n_dofs_tcr = get_std_from_ci(molec_stats, (tcell_type, "TCR"), mtc)
+
+    # Number of MHCs per APC (B6 splenocyte)
+    max_mhc = molec_stats.loc[("B6", "MHC"), mtc]
+
+    # Recover standard deviation from CI
+    mhc_log10_std, n_dofs_mhc = get_std_from_ci(molec_stats, ("B6", "MHC"), mtc)
+
+    # Pulse concentration to ligand numbers conversion:
+    # based on RMA-S 2019-2020 data
+    mhc_pulse_kd = pd.read_hdf(molec_counts_fi, key="mhc_pulse_kd")
+    # This pd.Series also contains covariance of the K_D parameter fit
+    pulse_kd = mhc_pulse_kd[mtc]
+
+    # Again, infer std from CI on the mean estimator
+    # Use the number of DOFs (number of exp. loading EC50 curves replicates)
+    kd_log10_std, n_dofs_kd = get_std_from_ci(mhc_pulse_kd, None, mtc)
+
+    # Use average parameters. amplitude, EC50
+    l_conc_mm_params = [max_mhc, pulse_kd]
+    l_conc_mm_params_std = [mhc_log10_std, kd_log10_std]
+
+    # Mapping tau and EC50s
+    with open(os.path.join(data_fold, "pep_tau_map_ot1.json"), "r") as handle:
+        pep_tau_map_ot1 = json.load(handle)
+
+    # Also return dofs: TCR, MHC, KD
+    dofs_tcr_mhc_kd = [n_dofs_tcr, n_dofs_mhc, n_dofs_kd]
+
+    return (tcr_number, l_conc_mm_params, pep_tau_map_ot1,
+                tcr_log10_std, l_conc_mm_params_std, dofs_tcr_mhc_kd)
+
+
 ### ANALYZING MCMC RUNS ###
 
 def assemble_kf_vals(kf, m_axis, results_dict, kind="posterior_probs", stratkey="MAP best"):
@@ -256,7 +368,15 @@ def check_fit_model_antagonism(model_panel, pvec, grid_pt, df_ratio, df_err,
     return df_model
 
 
-def plot_fit_antagonism(df_ratio, df_model, l_conc_mm_params, df_err, cost=None):
+def plot_fit_antagonism(
+        df_ratio, df_model, l_conc_mm_params, df_err, cost=None, model_ci=None
+    ):
+    # Aesthetic parameters
+    with open(os.path.join("..", "results", "for_plots", 
+            "perturbations_palette.json"), "r") as f:
+        pert_palette = json.load(f)
+    pert_palette["None"] = [0., 0., 0., 1.]  # Black
+    # Prepare data to plot
     df_model_data = pd.concat({"Data":df_ratio, "Model": df_model}, names=["Source"])
     df_model_data.name = "Antagonism ratio"
 
@@ -270,20 +390,18 @@ def plot_fit_antagonism(df_ratio, df_model, l_conc_mm_params, df_err, cost=None)
                 .rename(write_conc_uM, axis=0, level="AntagonistConcentration")
                 )
 
-    df_model_data = renamer(df_model_data)
-    df_err = renamer(df_err)
-    df_model_data = df_model_data.sort_index()
-    df_err = df_err.sort_index()
+    df_model_data = renamer(df_model_data).sort_index()
+    df_err = renamer(df_err).sort_index()
+    if model_ci is not None:
+        model_ci = renamer(model_ci).sort_index()
 
-    # Prepare palette, columns, etc.
+    # Prepare color palette
     available_antagconc = list(df_model_data.index
                         .get_level_values("AntagonistConcentration").unique())
-    available_antagconc = sorted(available_antagconc, key=read_conc_uM)
-
-    if len(available_antagconc) > 1:
-        palette = sns.color_palette("BuPu", n_colors=len(available_antagconc))
-    else:
-        palette = [(0, 0, 0, 1)]
+    available_antagconc = sorted(available_antagconc, key=read_conc_uM, reverse=True)
+    palette = sns.dark_palette(pert_palette["AgDens"],
+                               n_colors=len(available_antagconc))
+    palette[0] = (0.0,)*3 + (1.0,)
     palette = {a:c for a, c in zip(available_antagconc, palette)}
 
     marker_bank = ["o", "s", "^", "X", "P", "*"]
@@ -321,10 +439,19 @@ def plot_fit_antagonism(df_ratio, df_model, l_conc_mm_params, df_err, cost=None)
             else:
                 model_pts = np.log2(df_model_data.loc[("Model", *conc_key)]).sort_index()
                 err_pts = df_err.loc[conc_key].sort_index()
+                if model_ci is not None:
+                    percentiles = sorted(list(model_ci.columns), 
+                                        key=lambda x: float(x.split("_")[-1]))
+                    model_ci_low = np.log2(model_ci.loc[conc_key, percentiles[0]]).sort_index()
+                    model_ci_hi = np.log2(model_ci.loc[conc_key, percentiles[1]]).sort_index()
 
             hue = palette.get(antag_conc)
             mark = markers.get(antag_conc)
             style = linestyles.get(antag_conc)
+            if model_ci is not None:
+                # First shade confidence interval
+                ax.fill_between(model_ci_low.index.get_level_values("Antagonist").values,
+                            model_ci_low.values, model_ci_hi.values, color=hue, alpha=0.25)
             errbar = ax.errorbar(data_pts.index.get_level_values("Antagonist").values, data_pts.values,
                        yerr=err_pts.values, marker=mark, ls="none", color=hue, mfc=hue, mec=hue)
             li, = ax.plot(model_pts.index.get_level_values("Antagonist").values, model_pts.values,
@@ -357,13 +484,42 @@ def plot_fit_antagonism(df_ratio, df_model, l_conc_mm_params, df_err, cost=None)
 
 
 ### Confidence interval on model fits
-# This function can also be used for TCR/CAR
-def confidence_model_antagonism(model_panel, psamples, pbest, grid_pt,
-        df_ratio, df_err, other_args=(), n_taus=101, n_samp=1000, seed=None,
-        antagonist_lvl="Antagonist"):
+# Small utility functions to generate samples in log-scale
+def sample_lognorm(mean, std, rng, n_samp, base=10.0):
+    """ Sample n_samp mean estimator samples from a log-scale Gaussian
+    distribution with standard deviation std. The log-scale is in some base
+    (10 by default). rng is a NumPy random number generator.
+    """
+    samples = np.log(mean)/np.log(base) + std*rng.standard_normal(size=n_samp)
+    return base ** samples
+
+
+def sample_log_student(mean, std, rng, n_samp, n_dof, base=10.0):
+    """ Sample n_samp mean estimator samples from a log-scale Student's t
+    distribution with n_dof-1 degrees of freedom and standard deviation
+    std. The log-scale is in some base (10 by default).
+    rng is a NumPy random number generator.
+    """
+    noises = std * rng.standard_t(n_dof-1, size=n_samp)
+    samples = np.log(mean) / np.log(base) + noises
+    return base ** samples
+
+# Model CI estimation for TCR/TCR which includes uncertainty on ligand numbers
+# and uncertainty on receptor numbers too.
+def confidence_model_antagonism_tcr(
+        model_panel, psamples, pbest, grid_pt, df_ratio, df_err, other_args=(),
+        n_taus=101, n_samp=1000, seed=None, antagonist_lvl="Antagonist",
+        l_conc_mm_params=[1e5, 0.1], tcr_num_std=0.1, mm_params_std=[0.1, 0.1],
+        dofs_tcr_mhc_kd=[1000, 1000, 24]
+    ):
     """ Receive parameter samples and a point on the grid search,
     as well as a function evaluating antagonism panel for some model,
     and compute the confidence interval of model predictions compared to data.
+
+    Rigorously, the mean TCR, MHC numbers and K_D must be sampled from
+    a Student's t distribution, with scale given by the standard deviations
+    provided in tcr_num_std and mm_params_std, and number of degrees of
+    freedom provided in dofs_tcr_mhc_kd.
 
     Args:
         model_panel (callable): function evaluating model antagonism ratio
@@ -377,7 +533,17 @@ def confidence_model_antagonism(model_panel, psamples, pbest, grid_pt,
         other_args (tuple): other arguments passed to model_panel.
         seed (np.random.SeedSequence or int): random number generator seed
         n_samp (int): number of samples to draw for confidence intervals
-        antagonist_lvl (str):
+        antagonist_lvl (str): which level contains the antagonist tau,
+            will be dropped and replaced by a range of taus.
+        l_conc_mm_params (list of 2 floats): mean MHC number per APC
+            and peptide loading EC50 mean estimator.
+        tcr_num_std (float): standard deviation of the mean estimator
+            of the TCR number per T cell
+        mm_params_std (float): standard deviation of the mean estimators
+            for the MHC number and loading EC50 of an APC.
+        dofs_tcr_mhc_kd (list of 3 ints): the number of degrees of freedom
+            (cell or experimental repeats) from which the mean estimators
+            for the TCR number, MHC number, and loading EC50 are derived.
 
     Returns:
         df_stats (pd.DataFrame): statistics on model antagonism predictions,
@@ -385,92 +551,143 @@ def confidence_model_antagonism(model_panel, psamples, pbest, grid_pt,
     """
     rgen = np.random.default_rng(seed)
 
-    # Create continuous antagonist tau range.
+    # Recover the pulse concentrations from the ligand numbers computed
+    # with the best Michaelis-Menten parameters. These pulse concentrations
+    # will correspond to slightly different ligand numbers for each
+    # l_conc_mm_params values sampled when bootstrapping the CI.
+    best_ag_nums = df_ratio.index.get_level_values("AgonistConcentration").unique()
+    best_antag_nums = df_ratio.index.get_level_values("AntagonistConcentration").unique()
+    ag_pulses = inverse_michaelis_menten(best_ag_nums, *l_conc_mm_params)
+    antag_pulses = inverse_michaelis_menten(best_antag_nums, *l_conc_mm_params)
+    ag_l_conc_map = dict(zip(best_ag_nums, ag_pulses))
+    antag_l_conc_map = dict(zip(best_antag_nums, antag_pulses))
+    inv_l_ag_map = dict(zip(ag_l_conc_map.values(), ag_l_conc_map.keys()))
+    inv_l_antag_map = dict(zip(antag_l_conc_map.values(), antag_l_conc_map.keys()))
+
+    # Create continuous antagonist tau range, add pulse concentration levels
+    # to be converted to different ligand numbers for every sample.
     new_tau_range = np.linspace(0.001, df_ratio.index.get_level_values(antagonist_lvl).max(), n_taus)
     old_index = df_ratio.index.droplevel(antagonist_lvl).unique()
-    if isinstance(old_index, pd.MultiIndex):  # 2 ore more levels left
-        product_tuples = [tuple(a)+(b,) for b in new_tau_range for a in old_index]
-    elif isinstance(old_index, pd.Index):  # index elements are not iterables
-        product_tuples = [(a,)+(b,) for b in new_tau_range for a in old_index]
+    product_tuples = [tuple(a)+(b,) for b in new_tau_range for a in old_index]
     new_names = list(old_index.names) + [antagonist_lvl]
+    # Turn into a DataFrame without an index to better add and map index levels
+    # to deal with pulse concentration to ligand number conversions
     new_index = pd.MultiIndex.from_tuples(product_tuples, names=new_names)
+    df_idx = new_index.to_frame()
+    df_idx["AgonistPulse"] = df_idx["AgonistConcentration"].map(ag_l_conc_map)
+    df_idx["AntagonistPulse"] = df_idx["AntagonistConcentration"].map(antag_l_conc_map)
+
+    # Replace the ri_tot default by a local list to be modified each iteration
+    other_args_ci = list(other_args)
+    # From the loaded cost_args, extract TCR number and l_conc_mm_params
+    r_arg_type = type(other_args[1])
+    if r_arg_type in [int, float, np.float64]:
+        tcr_num_estim = other_args[1]  # r_tot
+    elif r_arg_type in [list, tuple, np.ndarray, set]:
+        tcr_num_estim = other_args[1][0]  # ri_tot[0]
+        # Replace the default list at other_args[1] by a local list
+        other_args_ci[1] = [tcr_num_estim, other_args[1][1]]
+    else:
+        raise ValueError("other_args unexpected order: {}".format(other_args))
 
     new_cols = pd.RangeIndex(n_samp)
+    df_model_idx = df_idx.set_index(["AgonistPulse", "AntagonistPulse"]
+                                        + list(new_index.names[2:])).index
     df_model = pd.DataFrame(np.zeros([len(new_index), n_samp]),
-                    index=new_index, columns=new_cols)
+                    index=df_model_idx, columns=new_cols)
 
     # Randomly sample parameters from the MCMC chain
     samp_choices = rgen.choice(psamples.shape[1]*psamples.shape[2], size=n_samp, replace=True)
     s_choices = samp_choices // psamples.shape[1]
     w_choices = samp_choices % psamples.shape[1]
 
+    # Student's t samples for the TCR, MHC, and K_D mean estimators
+    n_dofs_tcr, n_dofs_mhc, n_dofs_kd = dofs_tcr_mhc_kd
+    tcr_num_samples = sample_log_student(
+        tcr_num_estim, tcr_num_std, rgen, n_samp, n_dofs_tcr, base=10.0
+    )
+    mhc_num_samples = sample_log_student(
+        l_conc_mm_params[0], mm_params_std[0], rgen,
+        n_samp, n_dofs_mhc, base=10.0
+    )
+    load_kd_samples = sample_log_student(
+        l_conc_mm_params[1], mm_params_std[1], rgen,
+        n_samp, n_dofs_kd, base=10.0
+    )
+
     # Compute the antagonism ratio panel for each sample parameter set
+    # The last levels should be l_ag, l_antag, antag_tau,
+    # but previous levels can be the pulse concentrations
+    full_idx_order = ["AgonistPulse", "AntagonistPulse"] + list(new_index.names)
     for i in range(n_samp):
         nw, ns = w_choices[i], s_choices[i]
         pvec = psamples[:, nw, ns]
+        # Place new TCR number in other_args_ci
+        if r_arg_type in [int, float, np.float64]:
+            other_args_ci[1] = tcr_num_samples[i]
+        elif r_arg_type in [list, tuple, np.ndarray, set]:
+            other_args_ci[1][0] = tcr_num_samples[i]
+        # Prepare the new index with the sampled mhc_num and load_kd
+        df_idx["AgonistConcentration"] = michaelis_menten(
+            df_idx["AgonistPulse"], mhc_num_samples[i], load_kd_samples[i]
+        )
+        df_idx["AntagonistConcentration"] = michaelis_menten(
+            df_idx["AntagonistPulse"], mhc_num_samples[i], load_kd_samples[i]
+        )
+
+        new_index_ci = df_idx.set_index(full_idx_order).index
         try:
-            df_model[i] = model_panel(pvec, grid_pt, *other_args, new_index)
+            df_model_i = model_panel(pvec, grid_pt, *other_args_ci, new_index_ci)
         except RuntimeError:
-            df_model[i] = np.nan
+            df_model_i = np.nan
+        else:
+            df_model_i = df_model_i.droplevel(
+                ["AgonistConcentration", "AntagonistConcentration"], axis=0
+            )
+        df_model[i] = df_model_i
     print("Number NaN samples for {}:".format(grid_pt),
                 df_model.isna().iloc[0, :].sum())
 
     # Compute model output for best parameter vector.
-    sr_best = model_panel(pbest, grid_pt, *other_args, new_index)
+    # Need an index with pulse concentrations and the default L numbers
+    df_idx["AgonistConcentration"] = df_idx["AgonistPulse"].map(inv_l_ag_map)
+    df_idx["AntagonistConcentration"] = df_idx["AntagonistPulse"].map(inv_l_antag_map)
+    new_index_ci = df_idx.set_index(full_idx_order).index
+    try:
+        sr_best = model_panel(pbest, grid_pt, *other_args, new_index_ci)
+    except RuntimeError:
+        sr_best = np.nan
+    else:
+        sr_best = sr_best.droplevel(
+            ["AgonistConcentration", "AntagonistConcentration"], axis=0
+        )
 
     # Compute statistics of the ratios on a log scale, then back to linear scale
-    stats = ["percentile_5", "median", "mean", "geo_mean", "best", "percentile_95"]
+    stats = ["percentile_2.5", "median", "mean", "geo_mean", "best", "percentile_97.5"]
     df_stats = pd.DataFrame(np.zeros([df_model.shape[0], len(stats)]),
-                index=new_index, columns=stats)
+                index=df_model_idx, columns=stats)
     df_stats["mean"] = np.log(df_model.mean(axis=1))
     df_model = np.log(df_model)
-    df_stats["percentile_5"] = df_model.quantile(q=0.05, axis=1)
+    df_stats["percentile_2.5"] = df_model.quantile(q=0.025, axis=1)
     df_stats["median"] = df_model.quantile(q=0.5, axis=1)
     df_stats["geo_mean"] = df_model.mean(axis=1)
     df_stats["best"] = np.log(sr_best)
-    df_stats["percentile_95"] = df_model.quantile(q=0.95, axis=1)
+    df_stats["percentile_97.5"] = df_model.quantile(q=0.975, axis=1)
     df_stats = np.exp(df_stats)
+
+    # Put back default ligand numbers corresponding to Pulse levels for
+    # output compatibility with other panel functions
+    df_stats.index = (df_stats.index
+        .rename(names="AgonistConcentration", level="AgonistPulse")
+        .rename(names="AntagonistConcentration", level="AntagonistPulse")
+    )
+    df_stats = (df_stats
+        .rename(inv_l_antag_map, axis=0, level="AntagonistConcentration")
+        .rename(inv_l_ag_map, axis=0, level="AgonistConcentration")
+    )
+
     print("Finished computing model predictions for {}".format(grid_pt))
     return df_stats
-
-
-
-## Function to visualize the analysis results.
-# TODO: finish coding this plotting function
-def plot_fitted_params(popt, pvar, idx):
-    """ Assuming we have two index levels: TCR_Antigen and CAR_Antigen """
-    raise NotImplementedError()
-    # Prepare data for plotting
-    tcr_ag_order = ["N4", "A2", "Y3", "Q4", "T4", "V4", "G4", "E1", "None"]
-    tcr_ag_order = [p for p in tcr_ag_order if p in
-                        idx.get_level_values("TCR_Antigen").unique()]
-    npar = popt.shape[1]
-    ncol = 2
-    nrow = npar // ncol + min(1, npar % ncol)
-
-    fig, axes = plt.subplots(nrow, ncol, sharex=True)
-    fig.set_size_inches(7, 5)
-    axes  = axes.flatten()
-    xaxis = np.arange(len(tcr_ag_order))
-    for i, ax in enumerate(axes):
-        par = popt.columns.values[i]
-        ax.errorbar(xaxis, popt.loc[(tcr_ag_order, "None"), par],
-            yerr=np.sqrt(pvar.loc[(tcr_ag_order, "None"), par]),
-            label="Ag alone",ls="--", marker="o")
-        ax.errorbar(xaxis+0.065, popt.loc[(tcr_ag_order, "CD19"), par],
-            yerr=np.sqrt(pvar.loc[(tcr_ag_order, "None"), par]),
-            label="Ag + CD19", ls="-", marker="s")
-        # Determine decent y limits
-        ymin = popt.loc[tcr_ag_order, par].min()
-        ymax = popt.loc[tcr_ag_order, par].max()
-        yrange = ymax - ymin
-        ax.set_ylim(ymin - 0.2*yrange, ymax + 0.2*yrange)
-        ax.set(ylabel=r"${}$".format(par))
-        ax.set_xticks(xaxis)
-        ax.set_xticklabels(tcr_ag_order)
-        ax.legend()
-    fig.tight_layout()
-    return fig, axes
 
 
 # Function to check model outputs

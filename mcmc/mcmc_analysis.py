@@ -7,8 +7,6 @@ November 2022
 """
 import numpy as np
 import pandas as pd
-import emcee
-import h5py
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
@@ -17,7 +15,7 @@ import os
 from mcmc.convergence import (check_autocorr_convergence, rel_error,
                                     check_acceptance_fractions)
 from mcmc.estimation import find_max_posterior, find_confidence_interval
-from mcmc.plotting import hexpair
+from mcmc.plotting import corner_plot_mcmc_analysis
 from utils.preprocess import string_to_tuple
 
 
@@ -161,7 +159,9 @@ def analyze_mcmc_run(cond, samples, costs, metadata, cost_fct,
 
 ## Fit summary
 # Easily readable file with all model parameters and fit results
-def fit_summary_to_json(d_gp, s_gp, all_results_dicts, meth="MAP best", nkeep=2):
+def fit_summary_to_json(
+        d_gp, s_gp, all_results_dicts, meth="MAP best", nkeep=2, klim=np.inf
+    ):
     # Global parameters first
     summary = {}
     summary["common_parameters"] = {
@@ -194,7 +194,16 @@ def fit_summary_to_json(d_gp, s_gp, all_results_dicts, meth="MAP best", nkeep=2)
     sorted_grid = sorted(list(all_pvecs.keys()), reverse=True,
                     key=lambda x: all_pvecs[x].get("cost"))
 
-    for k in sorted_grid[:nkeep]:
+    # Drop all k > klim
+    sorted_grid_lim = []
+    for k in sorted_grid:  # All keys have format "(k, m, f)"
+        kmf_tuple = string_to_tuple(k)
+        k_i = kmf_tuple[0]  # Get the k_I parameter
+        # Check against limit, make sure this is kmf and not just m for SHP-1 model
+        if (k_i <= klim and len(kmf_tuple) > 1) or (len(kmf_tuple) == 1):  
+            sorted_grid_lim.append(k)
+
+    for k in sorted_grid_lim[:nkeep]:
         summary[k] = all_pvecs[k]
 
     return summary
@@ -270,38 +279,41 @@ def graph_mcmc_samples(cond, samples, costs, metadata, analysis_res,  **kwds):
     samples2 = np.moveaxis(samples[:, :, burn_end:], 1, 2).reshape(samples.shape[0], -1)
     costs2 = costs[:, burn_end:].T.flatten()
 
-    ## Pairplot with hexbins for 2D density plots.
+    ## Pairplot with corner package for 2D density plots.
     # Flatten all steady-state samples of all walkers and remove burn-in phase
     idx =  pd.RangeIndex(0, nwalkers*(nsamples-burn_end), name="Sample")
     df_samples = pd.DataFrame(samples2.T, index=idx,
                         columns=pd.Index(param_names, name="Parameter"))
-    g = hexpair(data=df_samples.reset_index(),
-            grid_kws={"vars": param_names, "layout_pad": 0.4},
-            hexbin_kws={"alpha": 0.8, "color":"k"},
-            diag_kws={"color": "k", "legend": False, "bins":"doane"})
+    print("Samples shape for cond {}, folder {}:".format(cond, figures_folder),
+        df_samples.shape)
+    
+    panel_dims = {
+        "panel_width": 1.5,
+        "panel_height": 1.5,
+        "axes_label_width": 0.25
+    }
+    sizes_kwargs = {
+        "scaleup": 1.0,
+        "small_lw": 1.0,
+        "truth_lw": 1.5,
+        "small_markersize": 1.5,
+        "labelpad": 0.1
+    }
+    line_props_kwargs = {
+        "map_colors": map_colors,
+        "linestyles": linestyles,
+        "markers": markers,
+        "strat_names_map": {"MAP hist": "MAP marginal"}
+    }
+    g = corner_plot_mcmc_analysis(
+        df_samples, analysis_res, panel_dims,
+        sizes_kwargs=sizes_kwargs, line_props_kwargs=line_props_kwargs
+    )
 
-    # Annotate MAP on the diagonals and hexbin plots.
-    for k, strat in enumerate(analysis_res["param_estimates"]):
-        ls = linestyles.pop(0)
-        mk = markers.pop(0)
-        linestyles.append(ls)
-        markers.append(mk)
-        map_strat = analysis_res["param_estimates"][strat]
-        strat_nice = "MAP marginal" if strat=="MAP hist" else strat
-        for i in range(n_pm):
-            for j in range(0, i):
-                g.axes[i, j].plot(map_strat[j], map_strat[i], marker=mk, ms=4,
-                    mfc=map_colors[k], mec=map_colors[k], ls="none",
-                    label=strat_nice)
-            # PairGrid uses special diagonal axes on top of the default subplot
-            # axes; need to get those, otherwise will always plot under
-            g.diag_axes[i].axvline(map_strat[i], ls=ls, color=map_colors[k],
-                        label=strat_nice, lw=1.5, alpha=1.0)
-    g.diag_axes[0].legend()
     g.tight_layout()
     figname = "mcmc_samples_histograms_{}.pdf".format(cond_nice)
     if do_save:
-        g.fig.savefig(os.path.join(figures_folder, figname),
+        g.savefig(os.path.join(figures_folder, figname),
             transparent=True, bbox_inches="tight")
     if do_show:
         plt.show()

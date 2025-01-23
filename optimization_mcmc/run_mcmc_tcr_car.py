@@ -1,6 +1,6 @@
-"""
+r"""
 Fit antagonism ratio data for CAR T cells responding to CD19 tumors
-with 1 uM TCR antigen. Grid search integer parameters $m$, $f$, $k_S$
+with 1 uM and 1 nM TCR antigen. Grid search integer parameters $m$, $f$, $k_S$
 and for each, optimize $C_{m, thresh}$, $I_0$, and $\psi_0$.
 
 Keeping separate main script for each model so we can launch MCMC in parallel
@@ -12,9 +12,7 @@ December 2022
 
 import numpy as np
 import pandas as pd
-import scipy as sp
-from scipy import optimize
-import h5py, json
+import h5py
 import seaborn as sns
 import matplotlib.pyplot as plt
 from time import perf_counter
@@ -27,25 +25,20 @@ if not "../" in sys.path:
 
 from mcmc.costs_tcr_car_antagonism import cost_antagonism_tcr_car
 from mcmc.mcmc_run import grid_search_emcee
-from models.tcr_car_akpr_model import steady_akpr_i_1ligand
 from mcmc.utilities_tcr_car_antagonism import (
     prepare_car_antagonism_data,
     inverse_michaelis_menten,
     load_tcr_car_molec_numbers,
     load_tcr_tcr_akpr_fits
 )
-from mcmc.utilities_tcr_tcr_antagonism import geo_mean_apply
 from utils.preprocess import (
     time_dd_hh_mm_ss,
-    geo_mean_levels,
-    loglog_michaelis_menten,
     inverse_michaelis_menten,
     write_conc_uM,
     ln10
 )
 
 ### UTILITY FUNCTIONS ###
-
 def plot_check_data(df, df_err, mm_params, do_save=False, do_show=False):
     # Temporary plot for checkup
     def reverse_mm_fitted(x):
@@ -79,8 +72,10 @@ def plot_check_data(df, df_err, mm_params, do_save=False, do_show=False):
             xerr=None, yerr=yerr, ecolor=palette[conc], ls="none"
         )
     if do_save:
-        g.fig.tight_layout()
-        g.fig.savefig("../figures/data_plots/data_fit_tcr_car_cd19_antagonism_mean.pdf")
+        g.figure.tight_layout()
+        g.figure.savefig(os.path.join("..", "figures", "data_plots",
+                         "data_fit_tcr_car_cd19_antagonism_mean.pdf"), 
+                    transparent=True, bbox_inches='tight')
     if do_show:
         plt.show()
     plt.close()
@@ -89,15 +84,34 @@ def plot_check_data(df, df_err, mm_params, do_save=False, do_show=False):
 
 
 ### MAIN FUNCTIONS ###
-def main_tcr_car_antagonism(data_list, surface_nums, mm_params, file_names,
-                        n_samp, thin_by, do_plot=False, tcr_conc="1uM"):
-    """ Returns the total number of steps taken """
+def main_tcr_car_antagonism(data_list, surface_nums, mm_params, file_names, **kwargs):
+    """ Returns the total number of steps taken. 
+    File names should be complete paths here, since this is a run function. 
+
+    kwargs:
+        n_samp (int)
+        thin_by (int)
+        do_plot (bool)
+        tcr_conc="both_conc" (str)
+        fit_bounds
+        seed_sequence
+        results_car_file (str): path to HDF5 file where results will be saved
+        cost_fct
+        prior_dist
+    """
     ## Data preparation. Unwrap input args
     df_fit, df_ci_log2 = data_list  # Processed antagonism data
     data_fname, res_file, analysis_file = file_names  # File names
     tcr_number, car_number, cd19_number = surface_nums  # surface molecules
+    n_samp = kwargs.get("n_samp", 10000)
+    thin_by = kwargs.get("thin_by", 8)
+    do_plot = kwargs.get("do_plot", False)
+    cost_fct = kwargs.get("cost_fct", cost_antagonism_tcr_car)
+    tcr_conc = str(kwargs.get("tcr_conc", "both_conc"))
+    results_car_file = kwargs.get("results_car_file", os.path.join(
+        "..", "results", "mcmc", "mcmc_results_tcr_car_{}.h5".format(tcr_conc)))
     if do_plot:
-        plot_check_data(df_fit, df_ci_log2, mm_params, do_save=False)
+        plot_check_data(df_fit, df_ci_log2, mm_params, do_save=True)
 
     ## Load/choose model parameters for 3-ITAM CAR, 10-ITAM TCR
     # Naive parameters for TCR. Use values fitted on TCR-TCR antagonism data
@@ -145,14 +159,14 @@ def main_tcr_car_antagonism(data_list, surface_nums, mm_params, file_names,
     # then phi_car, kappa_car, gamma_cc, psi0_car
     tcr_car_params = tcr_params + car_params
 
-    # Total R (both types) and S: fixed. R, S of TCR, then R of CAR
+    # Total R (both types) and I: fixed. R, I of TCR, then R of CAR
     tcr_rs = [tcr_number, tcr_itot]
     tcr_car_ritots = tcr_rs + [car_number]
 
     # N, m, f for 6Y TCR and 3-ITAM CAR: fixed ones, n_tcr, m_tcr, f_tcr, n_car
     tcr_car_nmf = tcr_nmf + [3]
 
-    # if gamma_tt is not 1, adjust s_tresh
+    # if gamma_tt is not 1, adjust I_thresh
     if tcr_params[-1] != 1.0:
         raise NotImplementedError()
 
@@ -160,10 +174,13 @@ def main_tcr_car_antagonism(data_list, surface_nums, mm_params, file_names,
     # Parameter boundaries: log10 of C_m_thresh_car, I_thresh_car,
     # gamma_{TC}, gamma_{CT}, tau_c_tcr, tau_c_car
     # Limit gamma_TC to 1
-    fit_bounds = [(1, 1000*tcr_car_ritots[2]), (1e-5, 1000.0*tcr_car_ritots[1])]
-    fit_bounds += [(0.1, 1.0), (1e-2, 1e4), (1.0, 30.0), (50.0, 5e3)]
-    # Rearrange as one array of lower, one array of upper bounds
-    fit_bounds = [np.log10(np.asarray(a)) for a in zip(*fit_bounds)]
+    fit_bounds = kwargs.get("fit_bounds", None)
+    prior_dist = kwargs.get("prior_dist", "uniform")
+    if fit_bounds is None and prior_dist == "uniform":
+        fit_bounds = [(1, 1000*tcr_car_ritots[2]), (1e-5, 1000.0*tcr_car_ritots[1])]
+        fit_bounds += [(0.1, 1.0), (1e-2, 1e4), (1.0, 30.0), (50.0, 5e3)]
+        # Rearrange as one array of lower, one array of upper bounds
+        fit_bounds = [np.log10(np.asarray(a)) for a in zip(*fit_bounds)]
 
     # Fitted ones:
     fit_params_vec = (fit_bounds[0] + fit_bounds[1])/2
@@ -176,17 +193,13 @@ def main_tcr_car_antagonism(data_list, surface_nums, mm_params, file_names,
                 cd19_tau_l, df_fit, df_ci_log2)
     # List only the names of cost function args to save to the hdf5 file.
     cost_args_names = ["fixed_rates", "tcr_car_ritots", "tcr_car_nmf", "cd19_tau_l"]
-    print(tcr_car_params)
-    print(tcr_car_ritots)
-    print(tcr_car_nmf)
-    print(cd19_tau_l)
 
     ## Fit with MCMC
-    # Grid search over m, f, k_S of the CAR, running MCMC in each case
-    # to adjust C_m_thresh_car, S_thresh_car, gamma_{TC}, gamma_{CT}, tau_c_tcr, tau_c_car
-    # Note: this can take a long time; run on the physics cluster
+    # Grid search over m, f, k_I of the CAR, running MCMC in each case
+    # to adjust C_m_thresh_car, I_thresh_car, gamma_{TC}, gamma_{CT}, 
+    # tau_c_tcr, tau_c_car
     kmf_bounds = [(1, 2), (1, 3), (1, 3)]
-    n_grid_pts = np.product([a[1]-a[0]+1 for a in kmf_bounds])
+    n_grid_pts = np.prod([a[1]-a[0]+1 for a in kmf_bounds])
     nwalkers = 32
 
     # Use special moves for this higher-dimensional space.
@@ -196,19 +209,23 @@ def main_tcr_car_antagonism(data_list, surface_nums, mm_params, file_names,
         (emcee.moves.DESnookerMove(gammas=1.5), 0.2),
         (emcee.moves.WalkMove(), 0.2)
     ]
+    seed_sequence = kwargs.get("seed_sequence", None)
+    if seed_sequence is None:
+        seed_sequence = np.random.SeedSequence(
+            0x183afaabb0cb7be3edb1e7fa2d17f5f,
+            spawn_key=(0xeecb6315d88ed7452ea5cb63dab6e7fd,)
+        )
 
-    seed_sequence = np.random.SeedSequence(0x183afaabb0cb7be3edb1e7fa2d17f5f,
-                            spawn_key=(0xeecb6315d88ed7452ea5cb63dab6e7fd,))
-    results_file = "../results/mcmc/mcmc_results_tcr_car_{}_test.h5".format(tcr_conc)
     try:
         start_t = perf_counter()
-        grid_search_emcee(cost_antagonism_tcr_car,
-            kmf_bounds, fit_bounds, results_file, p0=None, nwalkers=nwalkers,
+        grid_search_emcee(cost_fct,
+            kmf_bounds, fit_bounds, results_car_file, p0=None, nwalkers=nwalkers,
             nsamples=n_samp, seed_sequence=seed_sequence, cost_args=cost_args,
             cost_kwargs={}, emcee_kwargs={"moves":moves}, param_names=fit_param_names,
-            run_kwargs={"tune":True, "thin_by":thin_by})
+            run_kwargs={"tune":True, "thin_by":thin_by}, prior_dist=prior_dist
+        )
     except Exception as e:
-        os.remove(results_file)
+        os.remove(results_car_file)
         print("Carried exception over")
         print(e)
     else:
@@ -220,10 +237,10 @@ def main_tcr_car_antagonism(data_list, surface_nums, mm_params, file_names,
         print("Time per step: {} s".format(delta_t / nsteps))
         # Add the cost function args to the results file, except the data.
         # Add the name of the data file, though.
-        results_obj = h5py.File(results_file, "r+")
+        results_obj = h5py.File(results_car_file, "r+")
         args_group = results_obj.create_group("data")
         args_group.attrs["cost_args_names"] = cost_args_names
-        args_group.attrs["data_file_name"] = data_fname
+        args_group.attrs["data_file_name"] = data_fname  # full path, really
         args_group.attrs["thin_by"] = thin_by
         args_group.attrs["run_time"] = delta_t
         args_group.attrs["nsteps"] = nsteps
@@ -237,15 +254,24 @@ def main_tcr_car_antagonism(data_list, surface_nums, mm_params, file_names,
 
 
 if __name__ == "__main__":
-    # The number of steps taken is thin_param times number_samples
-    # As long as number_samples is below 10^5 there should be no RAM issues
-    # For larger number_samples, will need to use HDF5 backend of emcee.
-    # Run for a short time first, see if it works kind of OK...
+    # number_samples is the number of saved MCMC samples. 
+    # The number of steps taken is thin_param x number_samples
+    # As long as number_samples is below 10^5, there should be no RAM issues
     number_samples = 10000
     thin_param = 8
+    tcr_fit_conc = "both_conc"
+    mcmc_res_file = os.path.join("..", "results", "mcmc", 
+                            f"mcmc_results_tcr_car_{tcr_fit_conc}.h5")
+    if os.path.isfile(mcmc_res_file):
+        raise RuntimeError("Existing MCMC results file found at "
+            + str(mcmc_res_file) + ". If you want to re-run, "
+            + "delete the existing file first. ")
+    else:
+        print("Preparing TCR/CAR antagonism data and starting to fit...")
 
     # Number of TCR and CAR per T cell, CD19 per tumor, pulse KD, peptide taus
-    molec_counts_fi = "../data/surface_counts/surface_molecule_summary_stats.h5"
+    molec_counts_fi = os.path.join("..", "data", "surface_counts", 
+                                   "surface_molecule_summary_stats.h5")
     mtc = "Geometric mean"
     res = load_tcr_car_molec_numbers(molec_counts_fi, mtc, tumor_type="E2aPBX_WT",
                         tcell_type="OT1_CAR", tumor_antigen="CD19")
@@ -254,12 +280,15 @@ if __name__ == "__main__":
     l_conc_mm_params, pep_tau_map = res[3:]
 
     # Load TCR best fit parameters
-    tcr_results_file = "../results/mcmc/mcmc_results_akpr_i.h5"
-    tcr_analysis_file = "../results/mcmc/mcmc_analysis_akpr_i.json"
+    tcr_results_file = os.path.join("..", "results", "mcmc", 
+                                    "mcmc_results_akpr_i.h5")
+    tcr_analysis_file = os.path.join("..", "results", "mcmc", 
+                                     "mcmc_analysis_akpr_i.json")
 
     ## Antagonism ratio fitting
     # Prepare data for fitting antagonism ratios
-    data_file_name = "../data/antagonism/combined-OT1_CAR-dataframe_2022-01-19.hdf"
+    data_file_name = os.path.join("..", "data", "antagonism", 
+                                  "combined_OT1-CAR_antagonism.hdf")
     df = pd.read_hdf(data_file_name)
     chosen_fit_conc = ["1uM", "1nM"]
     data_prep = prepare_car_antagonism_data(df, l_conc_mm_params,
@@ -268,5 +297,5 @@ if __name__ == "__main__":
 
     file_names = [data_file_name, tcr_results_file, tcr_analysis_file]
     nsteps = main_tcr_car_antagonism(data_prep, surface_nums, l_conc_mm_params,
-                file_names, number_samples, thin_param,
-                do_plot=False, tcr_conc="both_conc")
+                file_names, n_samp=number_samples, thin_by=thin_param,
+                do_plot=False, tcr_conc=tcr_fit_conc)

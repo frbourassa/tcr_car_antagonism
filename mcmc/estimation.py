@@ -6,9 +6,6 @@ May 2022
 """
 import numpy as np
 
-sqrt2 = np.sqrt(2)
-
-
 def marginal_hist_modes(psamples, nburn):
     map_estimate = np.zeros(psamples.shape[0])
     # Find the mode for each component of the parameter vector.
@@ -43,9 +40,12 @@ def find_max_posterior(psamples, logposteriors, strat="hist", burn=0.5):
             posterior if the prior is uniform, because in that case, the two
             probabilities are proportional.
 
-    The two options may not agree, because the marginal modes are
-    not the joint distribution's mode in general. They can differ a lot
-    for non-Gaussian parameter distributions.
+    The options should agree in principle, because the steady-state
+    distribution should be the posterior, by construction.
+
+    In practice, the 'best' strategy works much better, because the most
+    sampled values of each parameter separately may not produce together
+    an outcome close to the data.
 
     Args:
         psamples (np.ndarray): sampled parameter values from an MCMC run,
@@ -102,8 +102,3 @@ if __name__ == "__main__":
 
     res0 = find_max_posterior(psamples, logposteriors, strat="hist", burn=0.2)
     print(res0)
-
-    # Compare to single best
-    #res2 = find_max_posterior(psamples, logposteriors, strat="best", burn=0.2)
-    #print(res1)
-    #print(res2)

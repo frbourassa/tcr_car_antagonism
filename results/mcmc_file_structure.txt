@@ -1,0 +1,35 @@
+file: mcmc_results_file.h5/ (TCR or CAR antagonism results file)
+    group: samples/
+        attributes: .attrs
+            "param_names"
+            "param_bounds"
+            "p0"
+            "grid_bounds"
+            "n_walkers"
+            "n_samples"
+
+        datasets: labeled "(k, m, f)"
+            attributes: .attrs
+                "run_id": "(k, m, f)"
+                "acceptance_fraction"
+            data: samples (np.ndarray), shaped (variable, walker, step)
+
+    group: cost/
+        attributes: .attrs
+            "n_walkers"
+            "n_samples"
+            "prior_dist": "uniform" or "gaussian"
+        datasets: labeled "(k, m, f)"
+            data: costs (np.ndarray), shaped (variable, walker, step)
+
+    group: data/
+        attributes: .attrs
+            "cost_args_names"
+            "data_file_name"
+            "thin_by"
+            "run_time"
+            "nsteps"
+        datasets:
+            "l_conc_mm_params"
+            one per entry in cost_args_names, the name of a
+            dataset is the name of the cost argument.

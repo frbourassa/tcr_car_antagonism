@@ -24,9 +24,29 @@ from utils.cpu_affinity import count_parallel_cpu
 n_cpu = count_parallel_cpu()
 
 
+### RandomState from modern BitGenerator ###
+def randomstate_from_rng(rng):
+    """ Given a random generator of our choice, initialize a legacy
+    Mersenne Twister RandomState, for compatibility with emcee,
+    then return its state, to set the state of emcee's RandomState.
+
+    Args:
+        rng (np.random.Generator): any class of np.random.Generator with a
+            method .bytes
+
+    Returns:
+        tuple or dict: a suitable argument for RandomState.set_state,
+            generated from the rng Generator.
+    """
+    # Seed has to be <2**32-1 = 32 bits = 4 bytes, pull a number like that
+    seed = int.from_bytes(rng.bytes(4))
+    rs = np.random.mtrand.RandomState(seed)
+    return rs.get_state()
+
+
 ### MCMC RUN FUNCTIONS ###
 def run_emcee(cost, pbounds, p0=None, nwalkers=32, nsamples=1000,
-            cost_args=(), cost_kwargs={}, run_id=None,
+            cost_args=(), cost_kwargs={}, run_id=None, prior_dist="uniform",
             rgen=None, emcee_kwargs={}, run_kwargs={}):
     """
     cost: should take pvec, pbounds as first two arguments.
@@ -41,14 +61,22 @@ def run_emcee(cost, pbounds, p0=None, nwalkers=32, nsamples=1000,
     # If rgen is none, create one
     if rgen is None:
         rgen = np.random.default_rng()
-    # If p0 is None, create initial parameter values scattered over space
-    if p0 is None:
+    # If p0 is None, create initial parameter values sampled from the prior
+    if p0 is None and prior_dist == "uniform":
         # limit to [0.05, 0.95] times the extent of each parameter interval
         extents = (pbounds[1] - pbounds[0]).reshape(1, -1)
-        p0 = 0.9 * extents * rgen.random(size=(nwalkers, len(pbounds[0])))
+        p0 = 0.9 * extents * rgen.random(size=(nwalkers, ndim))
         p0 = p0 + 0.05*extents + pbounds[0]
+    elif p0 is None and prior_dist == "gaussian":
+        # Sample from the Gaussian prior
+        # pbounds in this case are [means, variances]
+        p0 = rgen.normal(size=(nwalkers, ndim))*np.sqrt(pbounds[1]) + pbounds[0]
+
     # Prepare initial state
-    state_init = emcee.State(p0, random_state=rgen)
+    # Warning: passing an incorrect argument to random_state fails
+    # silently and results in the simulation not being seeded as desired
+    # make sure to pass a RandomState, not any other kind of random generator
+    state_init = emcee.State(p0, random_state=randomstate_from_rng(rgen))
 
     # Treat emcee kwargs and run kwargs. Make sure rgen, cost_args, cost_kwargs
     # are not duplicated in these kwargs, but do not add stuff to these
@@ -104,7 +132,8 @@ def grid_search_emcee(cost, grid_bounds, pbounds, results_fname,
     samples_group.attrs["param_names"] = param_names
     samples_group.attrs["param_bounds"] = pbounds
     samples_group.attrs["p0"] = p0 if p0 is not None else []
-
+    prior_dist = kwds.get("prior_dist", "uniform")
+    cost_group.attrs["prior_dist"] = prior_dist
 
     samples_group.attrs["grid_bounds"] = grid_bounds
     for g in [samples_group, cost_group]:
@@ -154,9 +183,9 @@ def grid_search_emcee(cost, grid_bounds, pbounds, results_fname,
         rgen_loc = np.random.default_rng(seeds.pop())
         cost_args_loc = (gpt,) + cost_args
         apply_kw = {"p0":p0, "nwalkers":nwalkers, "nsamples":nsamples,
-                        "cost_args":cost_args_loc, "cost_kwargs":cost_kwargs,
-                        "rgen":rgen_loc, "emcee_kwargs":emcee_kwargs,
-                        "run_kwargs":run_kwargs, "run_id":gpt}
+            "cost_args":cost_args_loc, "cost_kwargs":cost_kwargs,
+            "rgen":rgen_loc, "emcee_kwargs":emcee_kwargs,
+            "run_kwargs":run_kwargs, "run_id":gpt, "prior_dist":prior_dist}
         ret = pool.apply_async(run_emcee, args=(cost, pbounds), kwds=apply_kw,
             callback=callback, error_callback=error_callback)
         all_returns.append(ret)

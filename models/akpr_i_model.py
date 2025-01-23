@@ -3,7 +3,7 @@
 improved AKPR model."""
 
 import numpy as np
-from scipy.optimize import root as rootsolve, root_scalar
+from scipy.optimize import root_scalar
 
 
 ## Solving for C_T and D_T numerically (without the non-saturation approximation)
@@ -54,11 +54,11 @@ def solve_CT_DT(lsp, tausp, kappap, Rp):
 
     if np.sum(d_isrange) != 1:
         print("There are either no roots or too many; " +
-        "we found D_T = {} when L_2={}, R={}".format(d_ts, L2p, Rp))
+        "we found D_T = {} when L_1 = {}, L_2={}, R={}".format(d_ts, L1p, L2p, Rp))
         d_ts = np.clip(d_ts, a_min=0.0, a_max=min(Rp, L2p))
         d_isrange = True
-    c_ts = float(c_ts[d_isrange])
-    d_ts = float(d_ts[d_isrange])
+    c_ts = float(c_ts[d_isrange][0])
+    d_ts = float(d_ts[d_isrange][0])
     return c_ts, d_ts  # C_T and D_T
 
 
@@ -180,7 +180,7 @@ def steady_akpr_i_1ligand(ratesp, tau1p, L1p, ri_tots, nmf, large_l=False):
         if res.converged:
             complexes[-1] = res.root
         else:
-            raise RuntimeError("S solution did not converge; flag {}".format(res.flag))
+            raise RuntimeError("I did not converge; flag {}".format(res.flag))
 
     # From S, compute the phosphorylation of the last f+1 complexes
     psi_i = psi_of_i(complexes[-1], I0p, kp, phip, psi0)
@@ -257,7 +257,7 @@ def steady_akpr_i_2ligands(ratesp, tausp, lsp, ri_tots, nmf):
         if res.converged:
             complexes[-1] = res.root
         else:
-            raise RuntimeError("S solution did not converge; flag {}".format(res.flag))
+            raise RuntimeError("I solution did not converge; flag {}".format(res.flag))
 
     psi_i = psi_of_i(complexes[-1], I0p, kp, phip, psi0)
 
@@ -308,7 +308,7 @@ def activation_function(c, thresh, pwr=1):
 # total output of the receptor type, given threshold on the C_N
 # and the output of steady_akpr_i_receptor_types
 def compute_zoutput_from_complexes(complexes, threshold, Np):
-    """ Compute \sum_i Z_i, where Z_i = C^i_N/(C^i_N + \theta^i_N) is the output
+    r""" Compute \sum_i Z_i, where Z_i = C^i_N/(C^i_N + \theta^i_N) is the output
     of receptor type i.
     """
     cn_plus_dn = complexes[Np] + complexes[2*Np+1]

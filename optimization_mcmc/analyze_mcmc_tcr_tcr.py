@@ -23,7 +23,9 @@ from mcmc.mcmc_analysis import (
 )
 from mcmc.costs_tcr_tcr_antagonism import (
     cost_antagonism_akpr_i,
-    cost_antagonism_shp1
+    cost_antagonism_shp1,
+    cost_antagonism_akpr_priors,
+    cost_antagonism_shp1_priors
 )
 from mcmc.costs_tcr_tcr_antagonism import (
     antag_ratio_panel_akpr_i,
@@ -34,14 +36,12 @@ from mcmc.utilities_tcr_tcr_antagonism import (
     prepare_data,
     prepare_data_6f,
     plot_fit_antagonism,
-    check_fit_model_antagonism,
     check_model_output,
-    assemble_kf_vals,
-    confidence_model_antagonism
+    confidence_model_antagonism_tcr,
+    load_tcr_tcr_molec_numbers_ci
 )
 from utils.preprocess import (
     string_to_tuple,
-    loglog_michaelis_menten,
     inverse_michaelis_menten,
     ln10,
     write_conc_uM
@@ -58,40 +58,37 @@ if sys.platform == 'linux':
 
 
 ### MCMC RUN ANALYSIS ###
-def main_mcmc_analysis(fl, model, do_save=False, do_show=False):
+def main_mcmc_analysis(fl, model_kwargs, do_save=False, do_show=False):
     """ Choose among 3 options for model:
         "akpr_i": TCR/TCR antagonism on 6Y T cells with updated model
         "shp1": TCR/TCR antagonism on 6Y T cells with Francois 2013 model
         "6f": TCR/TCR on 6F T cells with updated model
+    Pass a dictionary of keyword arguments specifying file names etc.
     """
+    # Load folder names, etc. for each model choice
+    analysis_res_fname = model_kwargs.get("analysis_res_fname")
+    fit_summary_fname = model_kwargs.get("fit_summary_fname")
+    results_fname = model_kwargs.get("results_fname")
+    fig_subfolder = model_kwargs.get("fig_subfolder")
+    model = model_kwargs.get("model", "none")
+    # Can't pickle functions for multiprocessing, but these function choices
+    # are the same for all kinds of runs we want to do with each model.
     if model == "akpr_i":
-        analysis_res_fname = "mcmc_analysis_akpr_i_test.json"
-        fit_summary_fname = "fit_summary_akpr_i_test.json"
-        results = h5py.File(os.path.join(fl, "mcmc_results_akpr_i.h5"), "r")
-        fig_subfolder = "mcmc_akpr_i"
         data_prep_fct = prepare_data
-        cost_fct = cost_antagonism_akpr_i
-        panel_fct = antag_ratio_panel_akpr_i
+        cost_fct = (cost_antagonism_akpr_priors if "priors"
+                    in analysis_res_fname else cost_antagonism_akpr_i)
     elif model == "shp1":
-        analysis_res_fname = "mcmc_analysis_shp1_test.json"
-        fit_summary_fname = "fit_summary_shp1_test.json"
-        results = h5py.File(fl+"mcmc_results_shp1.h5", "r")
-        fig_subfolder = "mcmc_shp1"
         data_prep_fct = prepare_data
-        cost_fct = cost_antagonism_shp1
-        panel_fct = antag_ratio_panel_shp1
+        cost_fct = (cost_antagonism_shp1_priors if "priors" in analysis_res_fname
+                        else cost_antagonism_shp1)
     elif model == "6f":
-        analysis_res_fname = "mcmc_analysis_tcr_tcr_6f_test.json"
-        fit_summary_fname = "fit_summary_tcr_tcr_6f_test.json"
-        # Import MCMC results
-        results = h5py.File(fl+"mcmc_results_tcr_tcr_6f.h5", "r")
-        fig_subfolder = "mcmc_tcr_tcr_6f"
         data_prep_fct = prepare_data_6f
-        cost_fct = cost_antagonism_akpr_i
-        panel_fct = antag_ratio_panel_akpr_i
+        cost_fct = (cost_antagonism_akpr_priors if "priors"
+                    in analysis_res_fname else cost_antagonism_akpr_i)
     else:
         raise ValueError("Model {} unknown;".format(model)
                         + "choose among 'akpr_i', 'shp1', '6f'")
+    results = h5py.File(os.path.join(fl, results_fname), "r")
 
     # Import MCMC results
     samples_group = results.get("samples")
@@ -102,41 +99,38 @@ def main_mcmc_analysis(fl, model, do_save=False, do_show=False):
     data_file_name = data_group.attrs.get("data_file_name")
     l_conc_mm_params = data_group.get("l_conc_mm_params")[()]
     df = pd.read_hdf(data_file_name)
-    with open("../data/pep_tau_map_ot1.json", "r") as handle:
+    tau_file = os.path.join("..", "data", "pep_tau_map_ot1.json")
+    with open(tau_file, "r") as handle:
         pep_tau_map_ot1 = json.load(handle)
-    df_fit, df_ci_log2, tau_agonist = data_prep_fct(df,
+    df_fit, df_ci_log2, _ = data_prep_fct(df,
                                     l_conc_mm_params, pep_tau_map_ot1)
 
     # Analyze each run
-    if os.path.exists(os.path.join(fl, analysis_res_fname)):
-        jfile = open(os.path.join(fl, analysis_res_fname), "r")
-        all_results_dicts = json.load(jfile)
-        jfile.close()
+    all_results_dicts = {}
+    # Reconstitute cost function arguments, including data
+    cost_args_loaded = [data_group.get(a)[()]
+                        for a in data_group.attrs.get("cost_args_names")]
+    cost_args_loaded += [df_fit, df_ci_log2]
+    for cond in list(samples_group.keys()):
+        # In this case, we used the grid search point as the run_id.
+        grid_point = samples_group.get(cond).attrs.get("run_id")
+        # And it should be the first cost argument.
+        cost_args = [grid_point] + cost_args_loaded
+        results_dict = analyze_mcmc_run(cond, samples_group.get(cond),
+                cost_group.get(cond), dict(samples_group.attrs),
+                cost_fct, cost_args=cost_args)
+        all_results_dicts[cond] = results_dict
 
-    else:
-        all_results_dicts = {}
-        # Reconstitute cost function arguments, including data
-        cost_args_loaded = [data_group.get(a)[()]
-                            for a in data_group.attrs.get("cost_args_names")]
-        cost_args_loaded += [df_fit, df_ci_log2]
-        for cond in list(samples_group.keys()):
-            # In this case, we used the grid search point as the run_id.
-            grid_point = samples_group.get(cond).attrs.get("run_id")
-            # And it should be the first cost argument.
-            cost_args = [grid_point] + cost_args_loaded
-            results_dict = analyze_mcmc_run(cond, samples_group.get(cond),
-                    cost_group.get(cond), dict(samples_group.attrs),
-                    cost_fct, cost_args=cost_args)
-            all_results_dicts[cond] = results_dict
-
-        with open(os.path.join(fl, analysis_res_fname), "w") as jfile:
-            json.dump(all_results_dicts, jfile, indent=2)
+    with open(os.path.join(fl, analysis_res_fname), "w") as jfile:
+        json.dump(all_results_dicts, jfile, indent=2)
 
     # Write nice summary of all model parameters to JSON file
+    k_limit = 1 if model == "6f" else 2
     fit_summ = fit_summary_to_json(
-        data_group, samples_group, all_results_dicts, meth="MAP best"
+        data_group, samples_group, all_results_dicts, meth="MAP best",
+        klim=k_limit
     )
-    with open(os.path.join("..","results","mcmc",fit_summary_fname), "w") as h:
+    with open(os.path.join(fl, fit_summary_fname), "w") as h:
         json.dump(fit_summ, h, indent=2)
 
     # Use the analysis results to make plots
@@ -155,28 +149,6 @@ def main_mcmc_analysis(fl, model, do_save=False, do_show=False):
             all_results_dicts[cond], skip=5, walker_skip=4,
             figures_folder=figures_folder, do_save=do_save,
             do_show=do_show, plot_chain=False)
-
-        # Compute model ratios
-        p_est = all_results_dicts[cond].get("param_estimates")
-        dfs_model = {}
-        for strat in p_est:
-            dfs_model[strat] = check_fit_model_antagonism(
-                panel_fct, np.asarray(p_est.get(strat)), grid_point,
-                df_fit, df_ci_log2, other_args=cost_args_loaded, n_taus=101
-            )
-        dfs_model = pd.concat(dfs_model, names=["Estimate"])
-        cond_nice = (str(cond).replace(" ", "-").replace(")", "")
-                        .replace("(", "").replace(",", ""))
-        posts_cond = all_results_dicts[cond].get("posterior_probs")
-        fig, _ = plot_fit_antagonism(df_fit, dfs_model.loc["MAP best"],
-                l_conc_mm_params, df_ci_log2, cost=posts_cond.get("MAP best"))
-        if do_save:
-            fig.savefig(os.path.join(figures_folder,
-                        "data_model_comparison_{}.pdf".format(cond_nice)),
-                        bbox_inches="tight", transparent=True)
-        if do_show:
-            plt.show()
-        plt.close()
 
         print("Finished graphing condition {}".format(cond))
     return 0
@@ -201,23 +173,23 @@ def main_compare_models_figures(fl_res, fl_plots, cost_args,
     bests_shp1[1] = np.exp(bests_shp1[1]*ln10)
     # Print results
     print("Best AKPR k, m, f:", bests_akpr[0])
-    print("With C_m_thresh, S_thresh =", bests_akpr[1])
+    print("With C_m_thresh, I_thresh =", bests_akpr[1])
     print("Cost function:", -bests_akpr[2])
 
     print("Best SHP-1 m:", bests_shp1[0])
-    print("With C_m_thresh, S_tot =", bests_shp1[1])
+    print("With C_m_thresh, I_tot =", bests_shp1[1])
     print("Cost function:", -bests_shp1[2])
 
     # Heatmap/plot of the best k or k, m, f for each model
     # Find extents, axes, mesh, sorted_pts_list of gridded parameters.
     akpr_grids = rebuild_grid(results_akpr.keys())
     akpr_cost_grid = np.asarray(
-        [results_akpr[str(tuple(k))]["posterior_probs"]["MAP "+strategy]
+        [results_akpr[str(tuple(map(int, k)))]["posterior_probs"]["MAP "+strategy]
         for k in akpr_grids[-1]]).reshape(*akpr_grids[1])
     akpr_cost_grid *= -1  # Go back to cost to minimize
     shp1_grids = rebuild_grid(results_shp1.keys())
     shp1_cost_grid = np.asarray(
-        [results_shp1[str(tuple(k))]["posterior_probs"]["MAP "+strategy]
+        [results_shp1[str(tuple(map(int, k)))]["posterior_probs"]["MAP "+strategy]
         for k in shp1_grids[-1]]).reshape(*shp1_grids[1])
     shp1_cost_grid *= -1
 
@@ -226,14 +198,14 @@ def main_compare_models_figures(fl_res, fl_plots, cost_args,
     fig.set_size_inches(akpr_grids[1][0]*4, 4)
     axes = axes.flatten()
     for i in range(len(axes)):
-        ks = akpr_grids[2][0][i]  # k_S axis
+        ks = akpr_grids[2][0][i]  # k_I axis
         # left-right=cols=f, bottom-top=rows=m
         img = axes[i].imshow(akpr_cost_grid[i], cmap="plasma_r",
                     vmin=akpr_cost_grid.min(), vmax=akpr_cost_grid.max(),
                     origin="lower",
                     extent=(akpr_grids[0][2][0]-0.5, akpr_grids[0][2][1]+0.5,
                             akpr_grids[0][1][0]-0.5, akpr_grids[0][1][1]+0.5))
-        axes[i].set_title(r"$k_S = {}$".format(ks))
+        axes[i].set_title(r"$k_I = {}$".format(ks))
         axes[i].set(xlabel=r"$f$", ylabel=r"$m$")
         axes[i].set_xticks(akpr_grids[2][2])  # axes
         axes[i].set_yticks(akpr_grids[2][1])
@@ -249,14 +221,11 @@ def main_compare_models_figures(fl_res, fl_plots, cost_args,
 
     # SHP-1 scores: line plot vs m, comparing with AKPR SHP-1 too
     # Compute Akaike information = 2k - 2*ln(L)
-    # ln(L) log of likelihood is -cost function.
-    # number of parameters is 2 for SHP-1, 2 for AKPR SHP-1
-    # Lower is better.
-    # Also, I'm not counting k, m, f as parameters because they are gridded
-    # over, not fitted. They describe the structure of the model,
-    # they're not really parameters that one could over-fit.
-    aic_akpr = 2*3.0 - 2*(-1*akpr_cost_grid)
-    aic_shp1 = 2*2.0 - 2*(-1*shp1_cost_grid)
+    # ln(L) log of likelihood is -cost function. Lower is better.
+    # number of parameters is 3 for SHP-1, 4 for AKPR SHP-1
+    # Plus 1 for SHP-1 (m), 3 for AKPR (k, m, f)
+    aic_akpr = 2*7.0 - 2*(-1*akpr_cost_grid)
+    aic_shp1 = 2*4.0 - 2*(-1*shp1_cost_grid)
 
     fig, ax = plt.subplots()
     # Plot SHP-1 model first
@@ -268,7 +237,6 @@ def main_compare_models_figures(fl_res, fl_plots, cost_args,
         zorder=100)
 
     # Plot best condition AKPR SHP-1
-    # TODO: add colormap
     kf_grid = list(itertools.product(akpr_grids[2][0], akpr_grids[2][2]))
     m_axis = akpr_grids[2][1]
     #best_kf = (1, 2)  # Index of these k, f in the grid is 0 and 1, respectively
@@ -283,7 +251,7 @@ def main_compare_models_figures(fl_res, fl_plots, cost_args,
     best_grid_idx = tuple(best_grid_idx)
     costs_vals = aic_akpr[best_grid_idx]
     ax.plot(m_axis, costs_vals, color=models_colors[1], lw=3.5, marker="o",
-            label=r"AKPR, $k_S={}$, $f={}$".format(*best_kf), ms=8,
+            label=r"AKPR, $k_I={}$, $f={}$".format(*best_kf), ms=8,
             mfc=models_colors[1], mec=models_colors[1],
             zorder=101)
     colormap = list(sns.light_palette(models_colors[1], n_colors=len(kf_grid)))
@@ -298,7 +266,7 @@ def main_compare_models_figures(fl_res, fl_plots, cost_args,
         costs_vals = aic_akpr[kf_idx[0], :, kf_idx[1]]
         col = colormap.pop()
         ax.plot(m_axis, costs_vals, lw=1.25, color=col,
-            label=r"AKPR, $k_S={}$, $f={}$".format(*kf), ms=4,
+            label=r"AKPR, $k_I={}$, $f={}$".format(*kf), ms=4,
             marker=markers.pop(), mfc=col, mec=col)
     ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0))
     lowlim = min(aic_akpr.min(), aic_shp1.min())
@@ -333,7 +301,7 @@ def main_compare_models_figures(fl_res, fl_plots, cost_args,
         ax.plot(l_range, outputs[i], label=r"$\tau = {:.0f}$ s".format(tau))
     ax.set(xscale="log", yscale="log", xlabel=r"$L$", ylabel=r"$C_N$", title="AKPR SHP-1 model")
     ax.legend(loc="lower right")
-    ax.annotate(r"Best $k_S, m, f$ : $({}, {}, {})$".format(*best_kmf) + "\n"
+    ax.annotate(r"Best $k_I, m, f$ : $({}, {}, {})$".format(*best_kmf) + "\n"
                 + r"Best $\varphi$ : " + "{:.3f}\n".format(pvec[0])
                 + r"Best $C_{m, thresh}$ : " + "{:.2f}\n".format(pvec[1])
                 + r"Best $S_{thresh}$ : " + "{:.2e}\n".format(pvec[2])
@@ -354,7 +322,7 @@ def main_compare_models_figures(fl_res, fl_plots, cost_args,
 ### 6F TCR ANALYSIS ###
 def compare_kmf_tcr_tcr_6f(fl_res, fl_plots, cost_args_6f, do_save=False, do_show=False):
     # Load results files
-    with open(os.path.join(fl_res, "mcmc_analysis_tcr_tcr_6f_test.json"), "r") as h:
+    with open(os.path.join(fl_res, "mcmc_analysis_tcr_tcr_6f.json"), "r") as h:
         results_6f = json.load(h)
 
     # Find best kmf or m, print results
@@ -366,14 +334,14 @@ def compare_kmf_tcr_tcr_6f(fl_res, fl_plots, cost_args_6f, do_save=False, do_sho
     bests_6f[1] = np.exp(bests_6f[1]*ln10)
     # Print results
     print("Best k, m, f for 6F TCRs:", bests_6f[0])
-    print("With C_m_thresh, S_thresh =", bests_6f[1])
+    print("With C_m_thresh, I_thresh =", bests_6f[1])
     print("Cost function:", -bests_6f[2])
 
     # Heatmap/plot of the best k or k, m, f for each model
     # Find extents, axes, mesh, sorted_pts_list of gridded parameters.
     akpr_grids = rebuild_grid(results_6f.keys())
     akpr_cost_grid = np.asarray(
-        [results_6f[str(tuple(k))]["posterior_probs"]["MAP "+strategy]
+        [results_6f[str(tuple(map(int, k)))]["posterior_probs"]["MAP "+strategy]
         for k in akpr_grids[-1]]).reshape(*akpr_grids[1])
     akpr_cost_grid *= -1  # Go back to cost to minimize
 
@@ -383,14 +351,14 @@ def compare_kmf_tcr_tcr_6f(fl_res, fl_plots, cost_args_6f, do_save=False, do_sho
     if not isinstance(axes, np.ndarray):
         axes = np.asarray([axes])
     for i in range(len(axes)):
-        ks = akpr_grids[2][0][i]  # k_S axis
+        ks = akpr_grids[2][0][i]  # k_I axis
         # left-right=cols=f, bottom-top=rows=m
         img = axes[i].imshow(akpr_cost_grid[i], cmap="plasma_r",
                     vmin=akpr_cost_grid.min(), vmax=akpr_cost_grid.max(),
                     origin="lower",
                     extent=(akpr_grids[0][2][0]-0.5, akpr_grids[0][2][1]+0.5,
                             akpr_grids[0][1][0]-0.5, akpr_grids[0][1][1]+0.5))
-        axes[i].set_title(r"$k_S = {}$".format(ks))
+        axes[i].set_title(r"$k_I = {}$".format(ks))
         axes[i].set(xlabel=r"$f$", ylabel=r"$m$")
         axes[i].set_xticks(akpr_grids[2][2])  # axes
         axes[i].set_yticks(akpr_grids[2][1])
@@ -424,7 +392,7 @@ def compare_kmf_tcr_tcr_6f(fl_res, fl_plots, cost_args_6f, do_save=False, do_sho
         ax.plot(l_range, outputs[i], label=r"$\tau = {:.0f}$ s".format(tau))
     ax.set(xscale="log", yscale="log", xlabel=r"$L$", ylabel=r"$C_N$", title="AKPR SHP-1 model for 6F")
     ax.legend(loc="lower right")
-    ax.annotate(r"Best $k_S, m, f$ : $({}, {}, {})$".format(*best_kmf) + "\n"
+    ax.annotate(r"Best $k_I, m, f$ : $({}, {}, {})$".format(*best_kmf) + "\n"
                 + r"Best $\varphi$ : " + "{:.3f}\n".format(pvec[0])
                 + r"Best $C_{m, thresh}$ : " + "{:.2f}\n".format(pvec[1])
                 + r"Best $S_{thresh}$ : " + "{:.2e}\n".format(pvec[2])
@@ -442,37 +410,67 @@ def compare_kmf_tcr_tcr_6f(fl_res, fl_plots, cost_args_6f, do_save=False, do_sho
 
 ### Confidence intervals on the model fits ###
 # For final plotting in the paper, sample from the MCMC distributions.
+# Revision 1: use 95 % CI instead of 90 % CI
+# Revision 2: propagate uncertainty on MHC levels: sample a MHC level
+# for each MCMC parameter sample.
 # This repeats a bit the data_model_comparison plots, but whatever.
 # The main goal is to save these CIs to disk for plotting elsewhere
-def main_tcr_tcr_confidence(fl_res, fl_for_plots, do_save=False,
-                        do_show=False, n_boot=1000):
+def main_tcr_tcr_confidence(
+        fl_res, fl_for_plots, fnames_dict, molec_counts_fi, **kwargs
+    ):
     """ Compute model confidence intervals for Francois 2013 model, revised
     AKPR model, and 6F TCR fit. Call once per model
+
+    fl_res (str): path to the results folder
+    fl_for_plots (str): path to the results/for_plots folder
+    fnames_dict (dict): dictionary with 
+    molec_counts_fi (str): name of the surface molecule summary counts
+
+    kwargs:
+        do_save
+        do_show
+        n_boot
+        ci_res_fname
+        plotting_data_fname
+        fig_subfolder (str): folder where model fit plots will be saved
+        tcell_type
+        mtc
     """
-    if not (do_save or do_show):  # No plots
-        return 0
+    do_save = kwargs.get("do_save", False)
+    do_show = kwargs.get("do_show", False)
+    n_boot = kwargs.get("n_boot", 1000)
+    # Arguments for molecule numbers CIs
+    tcell_type = kwargs.get("tcell_type", "OT1_Naive")
+    mtc = kwargs.get("mtc", "Geometric mean")
+
     # Name of the file that will contain the results of this main function
-    ci_res_fname = "model_confidence_intervals_tcr_tcr_test.h5"
+    ci_res_fname = kwargs.get("ci_res_fname",
+        "model_confidence_intervals_tcr_tcr.h5")
+    ci_res_file = os.path.join(fl_res, ci_res_fname)
     # Also, name of the file that will contain all plotting data
-    plotting_data_fname = "dfs_model_data_ci_mcmc_tcr_tcr_test.h5"
+    plotting_data_fname = kwargs.get("plotting_data_fname",
+                            "dfs_model_data_ci_mcmc_tcr_tcr.h5")
     all_model_dfs = {}
     all_data_dfs = {}
     all_ci_dfs = {}
 
     # One main SeedSequence will spawn one seedsequence per model
     # which will spawn enough seedsequences to cover all kmf of that model
-    main_seedseq = np.random.SeedSequence(
+    main_seedseq = kwargs.get("main_seedseq", None)
+    if main_seedseq is None:
+        main_seedseq = np.random.SeedSequence(
                 entropy=0xe4b0e76433027d424189f4edea6f88ab,
                 spawn_key=(0x6af3ffba3469cf4ff8381cab2a3de3f6,)
-                )
-    models_list = ["akpr_i", "shp1", "tcr_tcr_6f"]
+        )
+    models_list = kwargs.get("models_list", ["akpr_i", "shp1", "tcr_tcr_6f"])
     model_seedseqs = main_seedseq.spawn(len(models_list))
 
     for model_suffix in models_list:
         seedseq = model_seedseqs.pop()
         # Model-specific arguments
-        analysis_res_fname = "mcmc_analysis_{}_test.json".format(model_suffix)
-        samples_fname = "mcmc_results_{}_test.h5".format(model_suffix)
+        mod = "6f" if model_suffix == "tcr_tcr_6f" else model_suffix
+        analysis_res_fname = fnames_dict[mod].get("analysis_res_fname")
+        samples_fname = fnames_dict[mod].get("results_fname")
         if model_suffix == "tcr_tcr_6f":
             data_prep_fct = prepare_data_6f
         else:
@@ -484,19 +482,27 @@ def main_tcr_tcr_confidence(fl_res, fl_for_plots, do_save=False,
             panel_fct = antag_ratio_panel_akpr_i
 
         # Import MCMC results
-        results_tcr_tcr = h5py.File(fl_res + samples_fname, "r")
+        results_tcr_tcr = h5py.File(os.path.join(fl_res, samples_fname), "r")
         samples_group = results_tcr_tcr.get("samples")
-        cost_group = results_tcr_tcr.get("cost")
         data_group = results_tcr_tcr.get("data")
 
         # Prepare all data: keep ITAM numbers levels and TCR Antigen Density
-        data_file_name = data_group.attrs.get("data_file_name")
+        data_file_name = data_group.attrs.get("data_file_name")  # full path
         l_conc_mm_params = data_group.get("l_conc_mm_params")[()]
-        with open("../data/pep_tau_map_ot1.json", "r") as handle:
+
+        tau_file = os.path.join("..", "data", "pep_tau_map_ot1.json")
+        with open(tau_file, "r") as handle:
             pep_tau_map_ot1 = json.load(handle)
         df = pd.read_hdf(data_file_name)
         df_fit, df_ci_log2, tau_agonist = data_prep_fct(df,
                                         l_conc_mm_params, pep_tau_map_ot1)
+
+        # Load standard deviation of the mean estimators of TCR, MHC, and
+        # loading EC50 parameters
+        molec_loads = load_tcr_tcr_molec_numbers_ci(
+            molec_counts_fi, mtc, tcell_type=tcell_type
+        )
+        _, _, _, tcr_num_std, mm_params_std, all_n_dofs = molec_loads
 
         # Load analysis results
         try:
@@ -507,47 +513,68 @@ def main_tcr_tcr_confidence(fl_res, fl_for_plots, do_save=False,
             raise FileNotFoundError("Run main_mcmc_analysis first.")
 
         # Launching CI calculations in parallel
-        try:
-            df_fit_model = pd.read_hdf(
-                        os.path.join(fl_res, ci_res_fname), key=model_suffix)
-            print("Loaded existing model predictions file")
-        except (FileNotFoundError, KeyError):
-            print("Starting to generate {} CI samples...".format(model_suffix))
-            start_t = perf_counter()
-            # Load constant model parameters
-            cost_args_loaded = [data_group.get(a)[()]
-                                for a in data_group.attrs.get("cost_args_names")]
+        print("Starting to generate {} CI samples...".format(model_suffix))
+        start_t = perf_counter()
+        # Load constant model parameters
+        cost_args_loaded = [data_group.get(a)[()]
+                            for a in data_group.attrs.get("cost_args_names")]
 
-            # Launch calculation of predictions
-            pool = multiprocessing.Pool(min(n_cpu, len(all_results_dicts)))
-            all_processes = {}
-            seeds = seedseq.spawn(len(all_results_dicts))
-            for cond in all_results_dicts.keys():
-                # Graphs of model prediction with confidence intervals from samples
-                grid_point = samples_group.get(cond).attrs.get("run_id")
-                p_samp = samples_group.get(cond)[()]
-                p_best = np.asarray(all_results_dicts[cond]
-                                .get("param_estimates")["MAP best"])
-                # Compute model ratios
-                res = pool.apply_async(
-                        confidence_model_antagonism,
-                        args=(panel_fct, p_samp, p_best,
-                                grid_point, df_fit, df_ci_log2),
-                        kwds=dict(other_args=cost_args_loaded, n_taus=200,
-                                n_samp=n_boot, seed=seeds.pop(),
-                                antagonist_lvl="Antagonist")
-                    )
-                all_processes[cond] = res
+        # Launch calculation of predictions
+        pool = multiprocessing.Pool(min(n_cpu, len(all_results_dicts)))
+        all_processes = {}
+        seeds = seedseq.spawn(len(all_results_dicts))
+        for cond in all_results_dicts.keys():
+            # Graphs of model prediction with confidence intervals from samples
+            grid_point = samples_group.get(cond).attrs.get("run_id")
+            p_samp = samples_group.get(cond)[()]
+            p_best = np.asarray(all_results_dicts[cond]
+                            .get("param_estimates")["MAP best"])
+            # Compute model ratios
+            res = pool.apply_async(
+                    confidence_model_antagonism_tcr,
+                    args=(panel_fct, p_samp, p_best,
+                            grid_point, df_fit, df_ci_log2),
+                    kwds=dict(other_args=cost_args_loaded, n_taus=200,
+                            n_samp=n_boot, seed=seeds.pop(),
+                            antagonist_lvl="Antagonist",
+                            l_conc_mm_params=l_conc_mm_params,
+                            tcr_num_std=tcr_num_std,
+                            mm_params_std=mm_params_std,
+                            dofs_tcr_mhc_kd=all_n_dofs)
+                )
+            all_processes[cond] = res
 
-            # Collect model predictions for each kmf into one DataFrame
-            df_fit_model = pd.concat({k:a.get() for k, a in all_processes.items()},
-                            names=["kmf"])
-            df_fit_model.to_hdf(os.path.join(fl_res, ci_res_fname), key=model_suffix)
-            pool.close()
-            delta_t = perf_counter() - start_t
-            print("Total time to generate {} CI: {} s".format(model_suffix, delta_t))
+        # Collect model predictions for each kmf into one DataFrame
+        df_fit_model = pd.concat({k:a.get() for k, a in all_processes.items()},
+                        names=["kmf"]).sort_index().sort_index(axis=1)
+        df_fit_model.to_hdf(ci_res_file, key=model_suffix)
+        pool.close()
+        delta_t = perf_counter() - start_t
+        print("Total time to generate {} CI: {} s".format(model_suffix, delta_t))
 
-        # Reformat further for plotting
+        # Make plots of model fits with CIs
+        fig_folder = os.path.join("..", "figures", 
+                                  fnames_dict[mod].get("fig_subfolder"))
+        for cond in all_results_dicts.keys():
+            cond_nice = (str(cond).replace(" ", "-").replace(")", "")
+                        .replace("(", "").replace(",", ""))
+            # Posterior probability
+            posts_cond = all_results_dicts[cond].get("posterior_probs")
+
+            percentiles = [a for a in df_fit_model.columns 
+                           if a.startswith("percentile")]
+            fig, _ = plot_fit_antagonism(df_fit, df_fit_model.loc[cond, "best"],
+                l_conc_mm_params, df_ci_log2, cost=posts_cond.get("MAP best"), 
+                model_ci=df_fit_model.loc[cond, percentiles])
+            if do_save:
+                fig.savefig(os.path.join(fig_folder,
+                        "data_model_comparison_{}.pdf".format(cond_nice)),
+                        bbox_inches="tight", transparent=True)
+            if do_show:
+                plt.show()
+            plt.close()
+        
+        # Reformat further for final plotting elsewhere
         # Rename concentrations to uM, nM for plotting convenience
         def reverse_mm_fitted(x):
             return inverse_michaelis_menten(x, *l_conc_mm_params)
@@ -581,7 +608,6 @@ def main_tcr_tcr_confidence(fl_res, fl_for_plots, do_save=False,
     dfs_data = pd.concat(all_data_dfs, names=["Model"])
     dfs_ci = pd.concat(all_ci_dfs, names=["Model"])
 
-    # Don't plot here
     # Save all final plotting data to disk for final figures production
     dfs_data.name = "Antagonism ratio"
 
@@ -589,49 +615,127 @@ def main_tcr_tcr_confidence(fl_res, fl_for_plots, do_save=False,
     dfs_model.to_hdf(plot_res_file, key="model")
     dfs_data.to_hdf(plot_res_file, key="data")
     dfs_ci.to_hdf(plot_res_file, key="ci")
+    print("Finished saving")
 
     return 0
 
 
 if __name__ == "__main__":
-    folder_results = "../results/mcmc/"
-    folder_results_for_plots = "../results/for_plots/"
+    # We provide file names and paths separately to analysis scripts. 
+    # This is because there are many file names in the same results folder. 
+    # However, data files are always provided as complete paths. 
+    analysis_kwarguments = {
+        "akpr_i": {
+            "analysis_res_fname": "mcmc_analysis_akpr_i.json",
+            "fit_summary_fname": "fit_summary_akpr_i.json",
+            "results_fname": "mcmc_results_akpr_i.h5",
+            "fig_subfolder": "mcmc_akpr_i",
+            "model": "akpr_i"
+        },
+        "shp1": dict(
+            analysis_res_fname = "mcmc_analysis_shp1.json",
+            fit_summary_fname = "fit_summary_shp1.json",
+            results_fname = "mcmc_results_shp1.h5",
+            fig_subfolder = "mcmc_shp1",
+            model = "shp1"
+        ),
+        "6f": dict(
+            analysis_res_fname = "mcmc_analysis_tcr_tcr_6f.json",
+            fit_summary_fname = "fit_summary_tcr_tcr_6f.json",
+            results_fname = "mcmc_results_tcr_tcr_6f.h5",
+            fig_subfolder = "mcmc_tcr_tcr_6f",
+            model = "6f"
+        )
+    }
+    folder_results = os.path.join("..", "results", "mcmc")
+    folder_results_for_plots = os.path.join("..", "results", "for_plots")
+    # Results file for model CI
+    ci_res_filename = "model_confidence_intervals_tcr_tcr.h5"
+    ci_res_filepath = os.path.join(folder_results, ci_res_filename)
+
     # Multiprocess
     all_processes = {"akpr_i":None, "shp1":None, "6f":None}
-    pool = multiprocessing.Pool(min(n_cpu, len(all_processes)))
+    skip_analysis = False
+    # Check that files do not already exist to avoid overwriting results
     for mod in all_processes.keys():
-        res = res = pool.apply_async(
-                main_mcmc_analysis,
-                args=(folder_results, mod),
-                kwds=dict(do_save=False)
-            )
-        all_processes[mod] = res
-    # There is no return but need to call get() to wait for the end
-    for mod in all_processes.keys():
-        all_processes[mod].get()
-    pool.close()
+        analysis_filename = analysis_kwarguments[mod]["analysis_res_fname"]
+        analysis_filepath = os.path.join(folder_results, analysis_filename)
+        if os.path.isfile(analysis_filepath):
+            if os.path.isfile(ci_res_filepath):
+                raise RuntimeError("Existing model analysis file found at "
+                    + str(analysis_filepath) + " and a model CI file at"
+                    + str(ci_res_filepath) + " . If you want to re-run, "
+                    + "delete these existing files first. ")
+             # This is being re-run just to get model CI; skip analysis
+            else: 
+                skip_analysis = True
+    
+    ### Launch main analysis
+    if not skip_analysis:
+        print("Starting MCMC results analysis...")
+        pool = multiprocessing.Pool(min(n_cpu, len(all_processes)))
+        for mod in all_processes.keys():
+            res = pool.apply_async(
+                    main_mcmc_analysis,
+                    args=(folder_results, analysis_kwarguments[mod]),
+                    kwds=dict(do_save=True)
+                )
+            all_processes[mod] = res
+        # There is no return but need to call get() to wait for the end
+        for mod in all_processes.keys():
+            all_processes[mod].get()
+        pool.close()
+    else:
+        print("...\nUsing existing analysis files, "
+              + "not generating analysis plots, "
+              + "and skipping to model CI generation. \n...\n"
+        )
 
-    # Model comparison, SHP-1 vs 6F
-    folder_graphs = "../figures/model_comparison/"
+    
+    ### Model comparison, SHP-1 vs 6F
+    folder_graphs = os.path.join("..", "figures", "model_comparison")
     cost_args = []
     # Get other cost function arguments.
-    for f in [os.path.join(folder_results, "mcmc_results_akpr_i.h5"),
-                os.path.join(folder_results, "mcmc_results_shp1.h5")]:
+    for fname in ["mcmc_results_akpr_i.h5", "mcmc_results_shp1.h5"]:
+        f = os.path.join(folder_results, fname)
         samples_file = h5py.File(f, "r")
         cost_args_names = samples_file.get("data").attrs.get("cost_args_names")
         # ["rates_others", "total_RI", "N", "tau_agonist"]
         cost_args.append([samples_file.get("data").get(a)[()] for a in cost_args_names])
+    
     main_compare_models_figures(folder_results, folder_graphs, cost_args,
-                                do_save=False, do_show=False)
+                                do_save=True, do_show=False)
 
-    # Choosing right k, m, f for 6F T cells
+    
+    ### Choosing right k, m, f for 6F T cells
     f = os.path.join(folder_results, "mcmc_results_tcr_tcr_6f.h5")
     samples_file = h5py.File(f, "r")
     cost_args_names = samples_file.get("data").attrs.get("cost_args_names")
     # ["rates_others", "total_RI", "N", "tau_agonist"]
     cost_args_6f = [samples_file.get("data").get(a)[()] for a in cost_args_names]
+    
     compare_kmf_tcr_tcr_6f(folder_results, folder_graphs, cost_args_6f,
-                            do_save=False, do_show=False)
+                            do_save=True, do_show=False)
 
+    ### Confidence intervals simulations
+    # Do not run if the results file already exists, 
+    # to avoid deleting good results. 
+    if os.path.isfile(ci_res_filepath):
+        raise RuntimeError("Existing model confidence intervals file found at "
+            + str(ci_res_filepath) + ". If you want to re-run, "
+            + "delete this existing file first. ")
+    molec_counts_fi = os.path.join("..", "data", "surface_counts", 
+                                   "surface_molecule_summary_stats.h5")
+    mtc = "Geometric mean"
+    
     main_tcr_tcr_confidence(folder_results, folder_results_for_plots,
-                            do_save=False, n_boot=1000)
+        analysis_kwarguments, molec_counts_fi=molec_counts_fi,
+        do_save=True, n_boot=1000, mtc=mtc, tcell_type="OT1_Naive", 
+        ci_res_fname=ci_res_filename
+    )
+    # kwargs do_show, plotting_data_fname, main_seedseq
+    # kept to default values
+    if skip_analysis:
+        print("Note: MCMC analysis was skipped before model CI calculation "
+              + "because existing results/mcmc/analysis*.json were found. "
+              + "Delete these files to reanalyze or analyze new simulations. ")

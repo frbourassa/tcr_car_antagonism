@@ -1,5 +1,8 @@
 """ Module with functions to compute predictions of TCR-CAR antagonism
 and adjust parameters for different T cell lines based on separate data.
+For in vitro data from OT1 CD19-CAR T cells (figure 3 in the paper).
+For generalization of the model to other cell lines with different receptor
+numbers or ligand EC50s, see confidence_predictions_numbers.py.
 
 @author: frbourassa
 May 2023
@@ -102,7 +105,8 @@ def antag_ratio_panel_tcr_car_predict(pvec, kmf, other_rates, ritot,
     inames = cond_index.names
     sr_ratio = pd.Series(np.zeros(len(cond_index)), index=cond_index)
     # Now, for each condition, compute model output for the mixture
-    for l_tcr, tau_tcr in cond_index:
+    for k in cond_index:
+        l_tcr, tau_tcr = k[-2], k[-1]
         taus = np.asarray([tau_tcr, cd19_tau_l[0]])
         lvec = np.asarray([l_tcr, cd19_tau_l[1]])
         complexes_mix = steady_akpr_i_receptor_types(all_rates, taus, lvec, ritot_vec, nmf_both)
@@ -111,8 +115,21 @@ def antag_ratio_panel_tcr_car_predict(pvec, kmf, other_rates, ritot,
         out_tcr = out_amplis[0] * activation_function(complexes_mix[0][-1], tcr_thresh)
         out_car = out_amplis[1] * activation_function(complexes_mix[1][-1], car_thresh)
         out_mix = out_tcr + out_car
-        sr_ratio[(l_tcr, tau_tcr)] = out_mix / ag_alone
+        sr_ratio[k] = out_mix / ag_alone
     return sr_ratio
+
+
+def propagate_variance_ratio(y_mean, x_mean, y_mean_var, x_mean_var):
+    """
+    Uncertainty propagation for the ratio y/x:
+    sum of relative uncertainties (variance / mean^2) if y, x are independent
+    Var[y/x] = (y/x)^2 * (Var[x_m]/x_m^2 + Var[y_m]/y_m^2)
+    where
+    Var[x_m] = Var[mean estimator] = 1/(N*(N-1)) * sum_i (x_mean - x_i)^2
+    """
+    var_yx = (y_mean_var / y_mean**2 + x_mean_var / x_mean**2)
+    var_yx *= (y_mean/x_mean)**2
+    return var_yx
 
 
 def find_1itam_car_ampli(df_cd19only, pvec, kmf, other_rates, ritot,
@@ -129,12 +146,7 @@ def find_1itam_car_ampli(df_cd19only, pvec, kmf, other_rates, ritot,
         max_ampli (float): ratio of response of 1-ITAM CAR over 3-ITAM CAR
     """
     ## 1. Compute ratio of responses to CD19 for 1- and 3-ITAM CARs
-    data_dir = os.path.join("data", "dataset_selection.json")
-    if not os.path.split(os.getcwd())[-1] == "car_tcr_dev":  # we are in subfolder
-        data_dir = os.path.join("..", data_dir)
-    with open(data_dir, "r") as h:
-        good_dsets = json.load(h).get("good_car_tcr_datasets")
-    df = df_cd19only.loc[df_cd19only.index.isin(good_dsets, level="Data")]
+    df = df_cd19only
 
     # Levels left in this df: "Cytokine", "Tumor", "TCR_ITAMs", "CAR_ITAMs",
     # "TCR_Antigen_Density", "Time"
@@ -143,8 +155,14 @@ def find_1itam_car_ampli(df_cd19only, pvec, kmf, other_rates, ritot,
             .xs("IL-2", level="Cytokine")
             .stack("Time"))
     # Look at the ratio of logs over time, averaged across times and repeats
-    df = df.groupby("CAR_ITAMs").apply(geo_mean_apply)
-    r13 = df["1"] / df["3"]
+    df_mean = df.groupby("CAR_ITAMs").apply(geo_mean_apply)
+    r13 = df_mean["1"] / df_mean["3"]
+
+    # Estimate the standard deviation of this ratio of mean activations
+    df_var = (df.groupby("CAR_ITAMs").var(ddof=1)
+                        / df.groupby("CAR_ITAMs").count())
+    r13_std = np.sqrt(propagate_variance_ratio(
+                df_mean["1"], df_mean["3"], df_var["1"], df_var["3"]))
 
     ## 2. Compute the output for 3-ITAM CAR
     p_all = repackage_tcr_car_params(pvec, kmf, other_rates, ritot, nmf_fixed)
@@ -168,7 +186,8 @@ def find_1itam_car_ampli(df_cd19only, pvec, kmf, other_rates, ritot,
     ## 4. Compute the relative amplitude the 6F Hill function must have
     # to match the ratio r13 found from data.
     rel_ampli_1itam = r13 * z3 / z1
-    return rel_ampli_1itam
+    rel_ampli_std = r13_std * z3 / z1
+    return rel_ampli_1itam, rel_ampli_std
 
 
 def find_1itam_effect_tcr_ampli(df_tcr_only):
@@ -199,13 +218,7 @@ def find_1itam_effect_tcr_ampli(df_tcr_only):
             1 ITAM CAR over response with 3-ITAM CAR, averaged
             across 6Y and 6F TCR genotypes.
     """
-    # Select relevant data
-    data_dir = os.path.join("data", "dataset_selection.json")
-    if not os.path.split(os.getcwd())[-1] == "car_tcr_dev":  # we are in subfolder
-        data_dir = os.path.join("..", data_dir)
-    with open(data_dir, "r") as h:
-        good_dsets = json.load(h).get("good_car_tcr_datasets")
-    df = df_tcr_only.loc[df_tcr_only.index.isin(good_dsets, level="Data")]
+    df = df_tcr_only
 
     # Levels left in this df: "Cytokine", "Tumor", "TCR_ITAMs", "CAR_ITAMs",
     #  "TCR_Antigen", "TCR_Antigen_Density", "Time".
@@ -217,11 +230,18 @@ def find_1itam_effect_tcr_ampli(df_tcr_only):
     # the TCR response in blast (mock) T cells
     df = df.loc[df.index.isin(['N4', 'A2'], level="TCR_Antigen")]
     # Look at the ratio of averaged logs across times, repeats and agonists
-    df = df.groupby("CAR_ITAMs").apply(geo_mean_apply)
+    df_mean = df.groupby("CAR_ITAMs").apply(geo_mean_apply)
     # Taking the geometric average before or after ratios: no difference
     # since geo(a/b) = geo(a)/geo(b).
-    effect_tcr_ampli_1itam = df["1"] / df["3"]
-    return effect_tcr_ampli_1itam
+    effect_tcr_ampli_1itam = df_mean["1"] / df_mean["3"]
+
+    # Estimate the standard deviation of this ratio of mean activations
+    df_var = (df.groupby("CAR_ITAMs").var(ddof=1)
+                        / df.groupby("CAR_ITAMs").count())
+    r13_std = np.sqrt(propagate_variance_ratio(
+                df_mean["1"], df_mean["3"], df_var["1"], df_var["3"]))
+
+    return effect_tcr_ampli_1itam, r13_std
 
 
 def find_6f_tcr_ampli(df_tcr_only):
@@ -233,13 +253,7 @@ def find_6f_tcr_ampli(df_tcr_only):
     Returns:
         relative_ampli_6f (float): ratio of max. response of 6F TCR over 6Y TCR
     """
-    # Select relevant data
-    data_dir = os.path.join("data", "dataset_selection.json")
-    if not os.path.split(os.getcwd())[-1] == "car_tcr_dev":  # we are in subfolder
-        data_dir = os.path.join("..", data_dir)
-    with open(data_dir, "r") as h:
-        good_dsets = json.load(h).get("good_car_tcr_datasets")
-    df = df_tcr_only.loc[df_tcr_only.index.isin(good_dsets, level="Data")]
+    df = df_tcr_only
 
     # Levels left in this df: "Cytokine", "Tumor", "TCR_ITAMs", "CAR_ITAMs",
     # "TCR_Antigen", "TCR_Antigen_Density", "Time".
@@ -251,9 +265,16 @@ def find_6f_tcr_ampli(df_tcr_only):
     # the TCR response in blast (mock) T cells
     df = df.loc[df.index.isin(['N4', 'A2'], level="TCR_Antigen")]
     # Look at the ratio of averaged logs across times, repeats and agonists
-    df = df.groupby("TCR_ITAMs").apply(geo_mean_apply)
-    relative_ampli_6f = df["4"] / df["10"]
-    return relative_ampli_6f
+    df_mean = df.groupby("TCR_ITAMs").apply(geo_mean_apply)
+    relative_ampli_6f = df_mean["4"] / df_mean["10"]
+
+    # Estimate the standard deviation of this ratio of mean activations
+    df_var = (df.groupby("TCR_ITAMs").var(ddof=1)
+                        / df.groupby("TCR_ITAMs").count())
+    r4_10_std = np.sqrt(propagate_variance_ratio(
+                df_mean["4"], df_mean["10"], df_var["4"], df_var["10"]))
+
+    return relative_ampli_6f, r4_10_std
 
 
 def loglin_hill_fit(x, a, b, h, k):
@@ -276,12 +297,7 @@ def find_6f_tcr_thresh_fact(df_tcr_only, pep_tau_map):
         pep_tau_map (dict)
     """
     # First, get appropriate data: response vs TCR Ag
-    data_dir = os.path.join("data", "dataset_selection.json")
-    if not os.path.split(os.getcwd())[-1] == "car_tcr_dev":  # we are in subfolder
-        data_dir = os.path.join("..", data_dir)
-    with open(data_dir, "r") as h:
-        good_dsets = json.load(h).get("good_car_tcr_datasets")
-    df = df_tcr_only.loc[df_tcr_only.index.isin(good_dsets, level="Data")]
+    df = df_tcr_only
     data_spleen_lvl = pd.Series(df.index.get_level_values("Data")
                                 + "-" + df.index.get_level_values("Spleen"),
                                 name="Data-spleen")
@@ -315,7 +331,16 @@ def find_6f_tcr_thresh_fact(df_tcr_only, pep_tau_map):
         tau_threshs.loc[k] = popt[2]
 
     # Compute average tau threshold for 6F and 6Y, return their difference
-    tau_threshs = tau_threshs.groupby("TCR_ITAMs").mean()
-    tau_threshs.name = "tau^T_c"
+    tau_th_mean = tau_threshs.groupby("TCR_ITAMs").mean()
+    tau_th_mean.name = "tau^T_c"
+    tau_th_var = (tau_threshs.groupby("TCR_ITAMs").var(ddof=1)
+                    / tau_threshs.groupby("TCR_ITAMs").count())
+    tau_th_var.name = "tau^T_c"
+
     # Also return the actual fitted thresholds
-    return tau_threshs["4"] / tau_threshs["10"], tau_threshs
+    tau_th_ratio = tau_th_mean["4"] / tau_th_mean["10"]
+    tau_th_ratio_std = np.sqrt(propagate_variance_ratio(
+        tau_th_mean["4"], tau_th_mean["10"],
+        tau_th_var["4"], tau_th_var["10"]
+    ))
+    return tau_th_ratio, tau_th_ratio_std, tau_threshs

@@ -74,15 +74,12 @@ def prints_tcr_6f(df):
 
 def prints_tcr_car(df):
     print("------ TCR/CAR ------")
-    data_fold = "../data"
-    with open(os.path.join(data_fold, "dataset_selection.json"), "r") as h:
-        good_dsets = json.load(h).get("good_car_tcr_datasets")
-    df = df.loc[df.index.isin(good_dsets, level="Data")]
     # Level order: 'Data', 'Cytokine', 'TCR_Antigen_Density', 'Tumor',
     # 'Spleen', 'TCR_ITAMs', 'CAR_ITAMs', 'TCR_Antigen', 'CAR_Antigen'
     df = df.loc[(s, "IL-2", s, "E2APBX")]
 
     # Number of datasets
+    good_dsets = df.index.get_level_values("Data").unique()
     print("Number of datasets:", len(good_dsets))
     print("These are:")
     print(good_dsets)

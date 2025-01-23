@@ -1,4 +1,4 @@
-"""
+r"""
 # Experimental EC50 to model binding time (tau) conversion
 
 Method: we assume $\tau$ and the EC50 $L_{50}$ (or EC10, etc.) are related by an

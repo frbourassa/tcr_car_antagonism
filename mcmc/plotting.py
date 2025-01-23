@@ -7,6 +7,7 @@ May 2022
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import corner
 
 import matplotlib.text as mtext
 from matplotlib.legend_handler import HandlerBase
@@ -307,57 +308,212 @@ def data_model_handles_legend(palette, markers, styles, palette_name,
 
     return legend_handles, legend_handler_map
 
-# Hexbin plot for use with pairgrid taken from StackOverflow:
-# https://stackoverflow.com/questions/40495093/hexbin-plot-in-pairgrid-with-seaborn
-def hexbin(x, y, color, max_ser=None, min_ser=None, **kwargs):
-    cmap = sns.light_palette(color, as_cmap=True)
-    ax = plt.gca()
-    xmin, xmax = min_ser[x.name], max_ser[x.name]
-    ymin, ymax = min_ser[y.name], max_ser[y.name]
-    artist = ax.hexbin(x, y, gridsize=15, cmap=cmap,
-            extent=[xmin, xmax, ymin, ymax], **kwargs)
-    return artist
+
+### Corner plots for model parameter posterior distributions
+def share_axis(axes, idx, which="x", reverse=False):
+    """ Force sharing of an axis (e.g. after putting log-scale ticks) between
+    an axis and all other axes of the same row (which=="y") or
+    column (which=='y'), taking into account whether the corner plots are in
+    the lower left (reverse == False) or upper right half of the grid
+    (reverse == True).
+
+    idx: tuple of 2 ints, the reference axis to share
+    """
+    iref, jref = idx
+    axref = axes[iref, jref]
+
+    if which == "x" or which == "both":  # Same column
+        rng = range(0, jref) if reverse else range(jref, axes.shape[0])
+        for i in rng:
+            if i != iref:
+                axes[i, jref].sharex(axref)
+                axes[i, jref].tick_params(axis="x", labelbottom=False)
+    if which == "y" or which == "both":
+        rng = range(iref, axes.shape[1]) if reverse else range(0, iref)
+        for j in rng:
+            if j != jref:
+                axes[iref, j].sharey(axref)
+                axes[iref, j].tick_params(axis="y", labelleft=False)
+    return axes
 
 
-## Pairplot with hexbins off-diagonal
-def hexpair(data, grid_kws={}, hexbin_kws={}, diag_kws={}):
-    """ Wrapper around FacetGrid, mapping sns.jointplot to lower
-    half and histogram to diagonal. grid_kws contain arguments about
-    the variables to be plotted, hues, and so on.
+# For log-transformed data, manually put back log-scale ticks
+def put_log_ticks(ax, axis="both", basis=10, max_ticks=5):
+    """ axis: either "x", "y", or "both" (default). """
+    # Do x axis
+    max_minor = max_ticks - 1
+    if axis in ["x", "both"]:
+        xlims = ax.get_xlim()
+        xmajor = np.arange(np.floor(xlims[0]), np.ceil(xlims[1])+1, 1, dtype="int")
+        xmajor_visible = xmajor[np.logical_and(xmajor <= xlims[1], xmajor >= xlims[0])]
+        xmajor_visible2 = xmajor_visible[::len(xmajor_visible)//max_ticks+1]
+        if len(xmajor_visible) == 0:
+            xlims = [xmajor[0], xmajor[1]]
+            xmajor_visible = np.asarray([xmajor[0], xmajor[1]])
+            xmajor_visible2 = xmajor_visible
+        ax.set_xticks(
+            ticks=xmajor_visible2,
+            labels=[r"$10^{" + str(k) + "}$" for k in xmajor_visible2]
+        )
 
+        # If less than 3 decades, put minor ticks too
+        if len(xmajor_visible) < max_minor and basis > 2:
+            decades = np.arange(2.0, basis, dtype="float")
+            xminor = []
+            for j in range(len(xmajor)):
+                xminor.append(np.log(10.0**xmajor[j] * decades)/np.log(basis))
+            xminor = np.concatenate(xminor)
+            ax.set_xticks(xminor, minor=True)
+        # Put back original limits
+        ax.set_xlim(xlims)
+
+    # Do y axis
+    if axis in ["y", "both"]:
+        ylims = ax.get_ylim()
+        ymajor = np.arange(np.floor(ylims[0]), np.ceil(ylims[1])+1, 1, dtype="int")
+        ymajor_visible = ymajor[np.logical_and(ymajor <= ylims[1], ymajor >= ylims[0])]
+        ymajor_visible2 = ymajor_visible[::len(ymajor_visible)//max_ticks+1]
+        if len(ymajor_visible) == 0:
+            ylims = [ymajor[0], ymajor[1]]
+            ymajor_visible = np.asarray(ylims)
+            ymajor_visible2 = ymajor_visible
+        ax.set_yticks(
+            ticks=ymajor_visible2,
+            labels=[r"$10^{" + str(k) + "}$" for k in ymajor_visible2],
+            rotation=0
+        )
+        # If less than 3 decades, put minor ticks too
+        if len(ymajor_visible) < max_minor and basis > 2:
+            decades = np.arange(2.0, basis, dtype="float")
+            yminor = []
+            for j in range(len(ymajor)):
+                yminor.append(np.log(10.0**ymajor[j] * decades)/np.log(basis))
+            yminor = np.concatenate(yminor)
+            ax.set_yticks(yminor, minor=True)
+        # Put back original limits
+        ax.set_ylim(ylims)
+
+    return ax
+
+
+# Corner plots for analysis of MCMC simulations, not as polished as published,
+# and takes actual samples and analysis results rather than file names
+# Keep this one to a minimum, just making corner plots, leave annotation to
+# the calling function
+def corner_plot_mcmc_analysis(
+        df_samples, analysis_res, pdims,
+        sizes_kwargs={}, line_props_kwargs={}, **kwargs
+    ):
+    """
     Args:
-        data (pd.DataFrame)
-        grid_kws (dict): keyword arguments passed to seaborn.PairGrid.
-            Accepted values and defaults: hue=None, hue_order=None,
-            palette=None, hue_kws=None, vars=None, x_vars=None, y_vars=None,
-            corner=False, diag_sharey=True, height=2.5, aspect=1,
-            layout_pad=0.5, despine=True, dropna=False, size=None
+        df_samples (pd.DataFrame): MCMC run samples, burn-in already dropped
+            and thinning applied, for some condition k, m, f,
+            with columns containing parameter names
+        analysis_res (dict): MCMC analysis results for some kmf
+        pdims (dict): dimensions of panels
+        sizes_kwargs (dict): things like scaleup, small_lw, truth_lw,
+            small_markersize.
+        line_props_kwargs (dict): for annotation of best parameter estimates,
+            lists: map_colors, linestyles, markers;
+            dict: strat_names_map
 
-        hexbin_kws (dict): keyword arguments passed to sns.jointplot,
-            apart from kind="hex". Accepted values and defaults:
-
-
-        diag_kws (dict): keyword arguments passed to sns.histogram.
-            Accepted values and defaults: hue=None, weights=None, stat='count',
-            bins='auto', binwidth=None, binrange=None, discrete=None,
-            cumulative=False, common_bins=True, common_norm=True,
-            multiple='layer', element='bars', fill=True, shrink=1, kde=False,
-            kde_kws=None, line_kws=None, thresh=0, pthresh=None, pmax=None,
-            cbar=False, cbar_ax=None, cbar_kws=None, palette=None,
-            hue_order=None, hue_norm=None, color=None, log_scale=None,
-            legend=True, ax=None, **kwargs
+    Other kwargs are passed to corner.corner.
 
     Returns:
-        g (sns.PairGrid)
+        fig (matplotlib.figure.Figure): cornerplot figure
     """
-    g = sns.PairGrid(data, **grid_kws)
-    g = g.map_diag(sns.histplot, **diag_kws)
-    g = g.map_lower(hexbin, min_ser=data.min(), max_ser=data.max(), **hexbin_kws)
-    for i in range(g.axes.shape[0]):
-        g.axes[i, i].set_ylabel("Density")
-        for j in range(i+1, g.axes.shape[1]):
-            g.axes[i, j].set_axis_off()
-    return g
+    # Labels and line styles
+    param_names = df_samples.columns.values
+    param_labels = list(map(lambda a: a.replace(r"\log ", ""), param_names))
+    param_labels = list(map(lambda a: a.replace("thresh", "th"), param_labels))
+    colors = line_props_kwargs.get("map_colors",
+            ["xkcd:cornflower", "xkcd:sage", "xkcd:salmon", "xkcd:mustard"]
+    )
+    linestyles = line_props_kwargs.get("linestyles", ["-", "-.", "--", ":"])
+    markers = line_props_kwargs.get("markers", ["o", "s", "^", "*"])
+    strat_names_map = line_props_kwargs.get("strat_names_map",
+        {"MAP hist": "MAP marginal"}
+    )
+
+    # Bins for histograms: doane
+    doane_bins = np.histogram_bin_edges(df_samples.iloc[:, 0], bins="doane").size - 1
+    pvec_best = np.asarray(analysis_res.get("param_estimates").get("MAP best"))
+
+    # Make the corner plot, using aesthetical parameters in sizes_kwargs
+    scaleup = sizes_kwargs.get("scaleup", 1.0)
+    small_lw = sizes_kwargs.get("small_lw", 0.8) * scaleup
+    truth_lw = sizes_kwargs.get("truth_lw", 1.25) * scaleup
+    small_markersize = sizes_kwargs.get("small_markersize", 1.0) * scaleup
+    reverse_plots = False
+    labelpad = sizes_kwargs.get("labelpad", len(pvec_best)**3/100.0)
+
+    # Corner plot
+    hist2d_kwargs = {"contour_kwargs":{"linewidths":small_lw},
+                     "data_kwargs":{"ms":small_markersize}}
+    fig = corner.corner(
+        data=df_samples.values,
+        labels=param_labels,
+        reverse=reverse_plots,
+        # Plot truths manually below to control line width
+        nbins=doane_bins,
+        labelpad=labelpad,
+        hist_kwargs={"linewidth": small_lw},
+        **hist2d_kwargs,
+        **kwargs
+    )
+    # Annotate MAP estimates as horizontal lines.
+    leg_handles = []
+    for k, strat in enumerate(analysis_res["param_estimates"]):
+        pvec_best = analysis_res["param_estimates"][strat]
+        truth_color = colors.pop(0)
+        colors.append(truth_color)
+        truth_ls = linestyles.pop(0)
+        linestyles.append(truth_ls)
+        truth_marker = markers.pop(0)
+        markers.append(truth_marker)
+        strat_nice_name = strat_names_map.get(strat, strat)
+        corner.overplot_lines(fig, pvec_best, reverse=reverse_plots,
+            color=truth_color, lw=truth_lw, ls=truth_ls
+        )
+        corner.overplot_points(
+            fig, [[p for p in pvec_best]], reverse=reverse_plots,
+            color=truth_color, ms=2.5*small_markersize, marker=truth_marker
+        )
+        leg_handles.append(Line2D([0], [0], label=strat_nice_name,
+            ls=truth_ls, lw=truth_lw, color=truth_color, marker=truth_marker
+        ))
+    n = sizes_kwargs.get("n_times_height", len(param_labels))
+    mx = sizes_kwargs.get("n_extra_x_labels", 2)
+    my = sizes_kwargs.get("n_extra_y_labels", 0)
+
+    # Data is log-transformed, put back log ticks and labels
+    # Treat y axes of the leftmost column, excluding first which is histogram
+    gs = fig.axes[0].get_gridspec()
+    axes = np.asarray(fig.axes).reshape(gs.nrows, gs.ncols)
+    for i in range(1, axes.shape[0]):
+        ax = axes[i, 0]
+        put_log_ticks(ax, axis="y", max_ticks=4)
+        share_axis(axes, (i, 0), which="y", reverse=reverse_plots)
+        ax.set_ylabel(param_names[i], labelpad=labelpad)
+    axes[0, 0].set_ylabel("Marginal", labelpad=labelpad + 10.0)
+
+    # Treat x axes of the bottom row, including last
+    max_x_ticks = 5 if axes.shape[1] < 5 else 4
+    for j in range(axes.shape[1]):
+        ax = axes[-1, j]
+        put_log_ticks(ax, axis="x", max_ticks=max_x_ticks)
+        share_axis(axes, (axes.shape[0]-1, j), which="x", reverse=reverse_plots)
+        ax.set_xlabel(param_names[j])
+
+    fig.legend(
+        handles=leg_handles, title="Parameter estimate",
+        bbox_to_anchor=(1, 1), loc="upper right"
+    )
+
+    fig.set_size_inches(pdims["panel_width"]*n + pdims["axes_label_width"]*mx,
+                       pdims["panel_height"]*n + pdims["axes_label_width"]*my)
+    fig.tight_layout()
+    return fig
 
 
 def average_time_series(t, y):
@@ -367,10 +523,10 @@ def average_time_series(t, y):
 
 
 if __name__ == "__main__":
-    # Test hexpair plot with dummy data
+    # Test corner plot with dummy data
     import pandas as pd
     vars = ["w", "x", "y", "z"]
-    numbers, letters = np.arange(100), list("abcd")
+    numbers, letters = np.arange(2000), list("abcd")
     idx = pd.MultiIndex.from_product([numbers, letters],
             names=["Number", "Letter"])
     cols = pd.Index(vars, name="Variable")
@@ -378,20 +534,26 @@ if __name__ == "__main__":
     arr = rgen.standard_normal(size=(len(idx), len(cols)))
     dat = pd.DataFrame(arr, index=idx, columns=cols)
 
-    gg = hexpair(
-        data=dat.reset_index(),
-        grid_kws={
-            "hue": "Letter",
-            "hue_order": letters[::-1],
-            "palette": sns.color_palette("magma", n_colors=len(letters)),
-            "vars": vars[1:],
-            "layout_pad": 0.4
-        },
-        hexbin_kws={
-            "alpha": 0.5
-        },
-        diag_kws={
-            "legend": False
-        })
+    dummy_analysis = {
+        "param_estimates":{
+            "MAP best": 0.2*np.random.standard_normal(size=len(vars)),
+            "MAP hist": 0.2*np.random.standard_normal(size=len(vars))
+        }
+    }
+    panel_dims = {
+        "panel_width": 3.0,
+        "panel_height": 3.0,
+        "axes_label_width": 0.25
+    }
+    sizes_args = {
+        "scaleup": 1.0,
+        "small_lw": 1.0,
+        "truth_lw": 1.5,
+        "small_markersize": 1.5,
+        "labelpad": 0.1
+    }
+    corner_plot_mcmc_analysis(
+        dat, dummy_analysis, panel_dims, sizes_args
+    )
     plt.show()
     plt.close()

@@ -6,20 +6,15 @@ December 2022
 """
 import numpy as np
 import pandas as pd
-from scipy.optimize import curve_fit
-import json
 
 # Local modules
 from models.tcr_car_akpr_model import (steady_akpr_i_receptor_types,
                                     steady_akpr_i_1ligand, activation_function)
-from models.akpr_i_model import psi_of_i
 
 # Useful constants, utility functions
 from utils.preprocess import (
     ln10,
-    eps_for_log,
-    geo_mean,
-    geo_mean_apply
+    eps_for_log
 )
 
 
@@ -81,8 +76,9 @@ def repackage_tcr_car_params(pvec, kmf, other_rates, ritot, nmf_fixed):
 
 
 ### TCR-CAR REVISED AKPR model ###
-def antag_ratio_panel_tcr_car(pvec, kmf, other_rates, ritot,
-                    nmf_fixed, cd19_tau_l, cond_index):
+def antag_ratio_panel_tcr_car(
+        pvec, kmf, other_rates, ritot, nmf_fixed, cd19_tau_l, cond_index
+    ):
     """
     Args:
         pvec (np.ndarray): log10 of parameters to fit, that is,
@@ -121,7 +117,8 @@ def antag_ratio_panel_tcr_car(pvec, kmf, other_rates, ritot,
     inames = cond_index.names
     sr_ratio = pd.Series(np.zeros(len(cond_index)), index=cond_index)
     # Now, for each condition, compute model output for the mixture
-    for l_tcr, tau_tcr in cond_index:
+    for k in cond_index:
+        l_tcr, tau_tcr = k[-2], k[-1]  # last two levels should be L, tau
         taus = np.asarray([tau_tcr, cd19_tau_l[0]])
         lvec = np.asarray([l_tcr, cd19_tau_l[1]])
         complexes_mix = steady_akpr_i_receptor_types(all_rates, taus, lvec, ritot_vec, nmf_both)
@@ -130,13 +127,13 @@ def antag_ratio_panel_tcr_car(pvec, kmf, other_rates, ritot,
         out_tcr = activation_function(complexes_mix[0][-1], tcr_thresh)
         out_car = activation_function(complexes_mix[1][-1], car_thresh)
         out_mix = out_tcr + out_car
-        sr_ratio[(l_tcr, tau_tcr)] = out_mix / ag_alone
+        sr_ratio[k] = out_mix / ag_alone
     return sr_ratio
 
 
 # Main AKPR SHP-1 cost function
 def cost_antagonism_tcr_car(pvec, pbounds, kmf, other_rates, ritot,
-                    nmf_fixed, cd19_tau_l, df_ratio, df_err):
+                    nmf_fixed, cd19_tau_l, df_ratio, df_err, verbose=False):
     """
     Args:
         pvec (np.ndarray): log10 of parameters to fit, that is,
@@ -156,6 +153,8 @@ def cost_antagonism_tcr_car(pvec, pbounds, kmf, other_rates, ritot,
         df_ratio (pd.DataFrame): antagonism ratio data for a fixed agonist.
             Should have its two last index levels be the L_TCR and tau_TCR.
         df_err (pd.DataFrame): log-scale error bars on the antagonism ratios.
+        verbose (bool): change default to True to print all errors raised
+            by extreme parameter values sampled in the absence of bounds
 
     Returns:
         cost (float): total scalar cost.
@@ -165,15 +164,58 @@ def cost_antagonism_tcr_car(pvec, pbounds, kmf, other_rates, ritot,
         return -np.inf
 
     # Compute antagonism ratio for each data condition
-    n_data = df_ratio.shape[0]
     try:
         df_ratio_model = antag_ratio_panel_tcr_car(pvec, kmf, other_rates,
                     ritot, nmf_fixed, cd19_tau_l, df_ratio.index)
     except (ValueError, RuntimeError) as e:
         ratio_dists = np.inf
-        print("Error {} with parameter values {} and m,f={}".format(type(e), pvec, kmf[1:]))
-        print(e)
+        if verbose:
+            print(f"Error {type(e)} with log10 parameter values "
+                + "{} and m,f={}".format(pvec, kmf[1:])
+                + ". Error:\n" + str(e))
     else:
-        ratio_dists = np.sum((np.log2(df_ratio_model/df_ratio+eps_for_log)/df_err)**2) / n_data
+        ratio_dists = 0.5 * np.sum((np.log2(df_ratio_model/df_ratio+eps_for_log)/df_err)**2)
 
     return -ratio_dists
+
+
+def cost_antagonism_tcr_car_priors(pvec, prior_p, kmf, other_rates, ritot,
+                    nmf_fixed, cd19_tau_l, df_ratio, df_err, verbose=False):
+    """
+    Args:
+        pvec (np.ndarray): phi, cm_thresh, i_thresh, psi0
+        prior_p (list of 2 arrays): array of averages, variances of priors
+            for each parameter.
+        kmf (list): k_I, m, f
+        other_rates (list): kappa
+        ritot (list of 2 floats): R_tot, I_tot
+        n_p (int): N
+        ag_tau (float): tau of agonist. For the MI calculation, this will be used
+            as one of the two taus to distinguish.
+        df_ratio (pd.DataFrame): antagonism ratio data for a fixed agonist.
+            Should have its three last index levels be the L1 (3rd to last), L2 (2nd to last)
+            and tau2 (last).
+        df_err (pd.DataFrame): log-scale error bars on the antagonism ratios.
+        verbose (bool): change default to True to print all errors raised
+            by extreme parameter values sampled in the absence of bounds
+
+    Returns:
+        cost (float): total scalar cost.
+    """
+    # Part 1: Compute the prior probability distribution, which is log-normal,
+    # i.e., a normal distribution of the log parameters.
+    logprior = -0.5 * np.sum((pvec - prior_p[0])**2 / prior_p[1])
+
+    # Part 2: compute antagonism ratio for each data condition, return total
+    try:
+        df_ratio_model = antag_ratio_panel_tcr_car(pvec, kmf, other_rates,
+                    ritot, nmf_fixed, cd19_tau_l, df_ratio.index)
+    except (ValueError, RuntimeError) as e:
+        ratio_dists = np.inf
+        if verbose:
+            print(f"Error {type(e)} with log10 parameter values "
+                + "{} and m,f={}".format(pvec, kmf[1:])
+                + ". Error:\n" + str(e))
+    else:
+        ratio_dists = 0.5 * np.sum((np.log2(df_ratio_model/df_ratio+eps_for_log)/df_err)**2)
+    return logprior - ratio_dists

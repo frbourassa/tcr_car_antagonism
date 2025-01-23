@@ -47,8 +47,8 @@ def solve_CT_DT(L1p, L2p, tau1p, tau2p, kappap, Rp):
     d_isrange = ((d_ts >= 0.)*(d_ts <= min(Rp, L2p))).astype(bool)
 
     assert np.sum(d_isrange) == 1, "There are either no roots or too many"
-    c_ts = float(c_ts[d_isrange])
-    d_ts = float(d_ts[d_isrange])
+    c_ts = float(c_ts[d_isrange][0])
+    d_ts = float(d_ts[d_isrange][0])
     return c_ts, d_ts  # C_T and D_T
 
 
