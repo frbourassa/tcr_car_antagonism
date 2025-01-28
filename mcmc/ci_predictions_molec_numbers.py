@@ -612,8 +612,6 @@ def confidence_predictions_car_antagonism_ligands(
         l_conc_mm_params[1], kd_std, rgen, n_samp, n_dofs_kd, base=10.0
     )
     # Sample EC50s, then compute peptide taus from them
-    # TODO: make sure that all peptide concentrations
-    # receive the same peptide tau...
     noises = rgen.standard_normal(size=[n_samp, pep_log10ec50s.shape[0]])
     # Put noises in the DataFrame, make peptides=columns for broadcasting
     pep_ec50_samples = pd.DataFrame(noises, columns=pep_log10ec50s["estimator"].index,

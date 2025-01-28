@@ -65,14 +65,14 @@ from mcmc.utilities_tcr_car_antagonism import (
     load_tcr_car_molec_numbers
 )
 
-from optimization_mcmc.run_mcmc_tcr_tcr_akpr_i import main_akpr_i_run
-from optimization_mcmc.run_mcmc_tcr_tcr_6f import main_tcr_tcr_run_6f
-from optimization_mcmc.run_mcmc_tcr_car import main_tcr_car_antagonism
-from optimization_mcmc.analyze_mcmc_tcr_tcr import (
+from run_mcmc_scripts.run_mcmc_tcr_tcr_akpr_i import main_akpr_i_run
+from run_mcmc_scripts.run_mcmc_tcr_tcr_6f import main_tcr_tcr_run_6f
+from run_mcmc_scripts.run_mcmc_tcr_car import main_tcr_car_antagonism
+from run_mcmc_scripts.analyze_mcmc_tcr_tcr import (
     main_mcmc_analysis,
     main_tcr_tcr_confidence
 )
-from optimization_mcmc.analyze_mcmc_tcr_car import (
+from run_mcmc_scripts.analyze_mcmc_tcr_car import (
     main_tcr_car_analysis,
     main_tcr_car_predictions,
     save_z_correction_factors
@@ -164,7 +164,7 @@ if __name__ == "__main__":
     # As long as number_samples is below 10^5 there should be no RAM issues
     # For larger number_samples, will need to use HDF5 backend of emcee.
     number_samples = 10000
-    thin_param = 4
+    thin_param = 0
 
     # Number of TCR per T cell, L-pulse conversion parameters, peptide taus
     mtc = "Geometric mean"

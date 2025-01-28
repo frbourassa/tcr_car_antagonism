@@ -297,8 +297,6 @@ def data_model_handles_legend(palette, markers, styles, palette_name,
                 color="grey", marker=None, label="Model", lw=model_lw))
 
     # Colors, linestyles and markers together
-    # TODO: ideally, the marker and line would be separated, e.g. with marker
-    # above the line, rather than stacked.
     legend_handles.append(LegendSubtitle(palette_name))
     for k in palette.keys():
         color = palette.get(k)

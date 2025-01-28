@@ -17,6 +17,8 @@ results/*.pkl
 results/*/*.pkl
 results/*/*.csv
 results/for_plots/test_tex
+results/for_plots/hhat*.json
+results/for_plots/l_tcr*.json
 results/archives/*/*.pkl
 results/archives/*/*.h5
 results/archives/*/*.json

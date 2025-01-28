@@ -214,7 +214,6 @@ def solution_francois2013_many_receptor_types(ratesp, tausp, Lsp, Rsp, iparams, 
     # Solve for I. Range of solutions between 0 and I_tot
     # Initial guess proportional to each C_T, total of I_tot/3.
     initial_i_guess = 0.33 * iparams[0]
-    # TODO: treat special case of one receptor kind separately (check length of arrays)
     Isol = root_scalar(equation_I_kind_receptors, bracket=(0.0, iparams[0]),
                     x0=initial_i_guess, rtol=precision,
                     args=(ratesp, tausp, C_tot_sols, iparams, nparams)).root

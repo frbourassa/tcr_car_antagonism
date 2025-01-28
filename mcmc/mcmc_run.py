@@ -96,7 +96,6 @@ def run_emcee(cost, pbounds, p0=None, nwalkers=32, nsamples=1000,
         **emcee_kwargs
     )
     # Run MCMC
-    # TODO: here, use the .sample method and check autocorrelation regularly.
     sampler.run_mcmc(
         state_init, nsamples, **run_kwargs
     )
