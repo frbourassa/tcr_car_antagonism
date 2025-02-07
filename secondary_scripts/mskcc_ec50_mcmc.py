@@ -22,6 +22,9 @@ Moreover, the full MCMC samples files are several GBs, so we only
 included the summary statistics (best fit, variance, CI, etc. of EC50 parameters)
 in our data and results repository. They are available upon request. 
 
+To fit and plot only a subset of peptides, change in the __main__ the variable 
+`selection` variable from None to the list `pepexamples`. 
+
 @author: frbourassa
 July 2024
 """
@@ -592,7 +595,7 @@ if __name__ == "__main__":
                                 "mskcc_ec50_lsq_results_backgnd.h5")
 
     # Selected examples
-    pepexes = [
+    pepexamples = [
         ('CMV', '1', 'A7G'),
         #("CMV", "2", "V6D"),
         ("CMV", "1", "WT"),
@@ -607,7 +610,7 @@ if __name__ == "__main__":
         ("Neoantigen", "7", "WT"),
         ("Neoantigen", "7", "A5C"),
     ]
-    selection = None  #pepexes  # or None to run all
+    selection = None  #pepexamples  # or None to run all
 
     # Fitting main function's kwargs
     fit_kwargs = {
@@ -646,7 +649,7 @@ if __name__ == "__main__":
     plot_kwargs = {
         "do_save": True,
     }
-    for pepex in pepexes:
+    for pepex in pepexamples:
         if os.path.isfile(mcmc_filename):
             plot_kwargs["fig_dir_prefix"] = "../figures/dose_response/mskcc_mcmc/mskcc_ec50_mcmc_corner_"
             scatter_example_peptide(

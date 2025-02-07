@@ -162,7 +162,7 @@ if __name__ == "__main__":
         ot1_file="../data/pep_tau_map_ot1.json",
         others_file="../data/pep_tau_map_others.json",
         ref_pep="OT1-N4",
-        overwrite=True
+        overwrite=False
     )
 
     print("Current other peptides map:")

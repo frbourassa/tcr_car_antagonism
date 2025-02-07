@@ -90,7 +90,7 @@ if __name__ == "__main__":
     # Start points of this main script (for re-running after crash)
     # 0:all, 1:6F, 2:TCR analysis, 3:TCR CI, 4: TCR/CAR run,
     # 5: TCR/CAR analysis, 6: TCR/CAR predictions
-    start_point = 4
+    start_point = 0
     # Define all file names first
     # For main MCMC run functions, we provide complete paths
     # For main analysis functions, we provide file names

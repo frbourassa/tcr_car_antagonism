@@ -32,6 +32,9 @@ Moreover, the full MCMC samples file is 1.5 GBs so we only
 included the summary statistics (best fit, variance, CI, etc. of EC50 parameters)
 in our data and results repository. The MCMC file is available upon request. 
 
+To fit and plot only a subset of peptides, change in the __main__ the variable 
+`selection` variable from None to the list `pepexamples`. 
+
 @author: frbourassa
 August 2024
 """
@@ -91,10 +94,10 @@ if __name__ == "__main__":
     # L8F = new batch of HHAT-p8F in the ordered peptide library
     # WT = new batch of HHAT-WT in the ordered peptide library
     # (WT = reverse substitution F8L in the L8F peptide from which the library originated)
-    pepexes = ["L8F", "WT", "L9C", "K1A", "V5I", "L7V"]
-    pepexes = list(map(lambda x: ("HHAT-L8F", "8", x), pepexes+pep_controls))
-    pepexes.remove(("HHAT-L8F", "8", "DMSO"))
-    selection = None  #pepexes  # or None to run all
+    pepexamples = ["L8F", "WT", "L9C", "K1A", "V5I", "L7V"]
+    pepexamples = list(map(lambda x: ("HHAT-L8F", "8", x), pepexamples+pep_controls))
+    pepexamples.remove(("HHAT-L8F", "8", "DMSO"))
+    selection = None  #pepexamples  # or None to run all
 
     # Parameter fitting arguments differing from those chosen to re-analyze
     # MSKCC dose response data
@@ -167,7 +170,7 @@ if __name__ == "__main__":
         "resp_name": fit_kwargs.get("resp_name")
     }
     print("Starting plotting code")
-    for pepex in pepexes:
+    for pepex in pepexamples:
         if os.path.isfile(mcmc_filename):
             plot_kwargs["fig_dir_prefix"] = "../figures/dose_response/hhatv4_mcmc/hhatv4_ec50_mcmc_corner_"
             scatter_example_peptide(

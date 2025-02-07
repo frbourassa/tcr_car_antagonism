@@ -51,3 +51,4 @@ data/*/*/*.pkl
 *.npz
 optimization_mcmc/*.txt
 notes/
+plotting_final/panels*/*.pdf

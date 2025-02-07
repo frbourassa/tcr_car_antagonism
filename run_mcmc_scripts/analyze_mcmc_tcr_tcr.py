@@ -236,12 +236,9 @@ def main_compare_models_figures(fl_res, fl_plots, cost_args,
         color=models_colors[0], lw=3.5, marker="s", ms=8, mec=models_colors[0],
         zorder=100)
 
-    # Plot best condition AKPR SHP-1
+    # Plot best condition revised AKPR
     kf_grid = list(itertools.product(akpr_grids[2][0], akpr_grids[2][2]))
     m_axis = akpr_grids[2][1]
-    #best_kf = (1, 2)  # Index of these k, f in the grid is 0 and 1, respectively
-    #costs_vals = aic_akpr[0, :, 1]
-    #best_kmf = (best_kf[0], m_axis[np.argmin(costs_vals)], best_kf[1])
     best_kmf = find_best_grid_point(results_akpr, strat=strategy)[0]
     best_kmf = string_to_tuple(best_kmf)
     best_kf = best_kmf[::2]
@@ -285,10 +282,6 @@ def main_compare_models_figures(fl_res, fl_plots, cost_args,
     # Check model curves for single ligand of AKPR fit
     # Does it still have absolute discrimination?
     # cost_args: ["rates_others", "total_RI", "N", "tau_agonist"]
-
-    # We changed best kmf to 1, 2, 2; uncomment to check 1, 2, 3 (true best by slight margin)
-    #best_kmf = (1, 2, 3)
-
     pvec = results_akpr[str(best_kmf)]["param_estimates"]["MAP " + strategy]
     pvec = np.exp(np.asarray(pvec)*ln10)
     akpr_best_rates = [pvec[0]] + list(cost_args[0][0][:1]) + list(pvec[1:3]) + [best_kmf[0], pvec[3]]
@@ -299,7 +292,7 @@ def main_compare_models_figures(fl_res, fl_plots, cost_args,
     fig.set_size_inches(5.5, 4.0)
     for i, tau in enumerate(tau_range):
         ax.plot(l_range, outputs[i], label=r"$\tau = {:.0f}$ s".format(tau))
-    ax.set(xscale="log", yscale="log", xlabel=r"$L$", ylabel=r"$C_N$", title="AKPR SHP-1 model")
+    ax.set(xscale="log", yscale="log", xlabel=r"$L$", ylabel=r"$C_N$", title="Revised AKPR model")
     ax.legend(loc="lower right")
     ax.annotate(r"Best $k_I, m, f$ : $({}, {}, {})$".format(*best_kmf) + "\n"
                 + r"Best $\varphi$ : " + "{:.3f}\n".format(pvec[0])
@@ -325,7 +318,9 @@ def compare_kmf_tcr_tcr_6f(fl_res, fl_plots, cost_args_6f, do_save=False, do_sho
     with open(os.path.join(fl_res, "mcmc_analysis_tcr_tcr_6f.json"), "r") as h:
         results_6f = json.load(h)
 
-    # Find best kmf or m, print results
+    # Find best kmf or m, print results. Here we allow any k, 
+    # but for further predictions, we will limit to k = 1 to: 
+    # 1) prevent overfitting, and 2) be consistent with 6Y T cells. 
     strategy = "best"
     bests_6f = find_best_grid_point(results_6f, strat=strategy)
 
@@ -375,11 +370,6 @@ def compare_kmf_tcr_tcr_6f(fl_res, fl_plots, cost_args_6f, do_save=False, do_sho
     # Plotting model output as a function of L
     pvec = results_6f[str(bests_6f[0])]["param_estimates"]["MAP " + strategy]
     pvec = np.exp(np.asarray(pvec)*ln10)
-    #kf_grid = list(itertools.product(akpr_grids[2][0], akpr_grids[2][2]))
-    #m_axis = akpr_grids[2][1]
-    #best_kf = (1, 2)  # Index of these k, f in the grid is 0 and 1, respectively
-    #costs_vals = aic_akpr[0, :, 1]
-    #best_kmf = (best_kf[0], m_axis[np.argmin(costs_vals)], best_kf[1])
     best_kmf = tuple(int(k) for k in bests_6f[0].strip("()").split(","))
 
     best_rates_6f = [pvec[0]] + list(cost_args_6f[0][:1]) + list(pvec[1:3]) + [best_kmf[0], pvec[3]]
@@ -390,7 +380,7 @@ def compare_kmf_tcr_tcr_6f(fl_res, fl_plots, cost_args_6f, do_save=False, do_sho
     fig.set_size_inches(5.5, 4.0)
     for i, tau in enumerate(tau_range):
         ax.plot(l_range, outputs[i], label=r"$\tau = {:.0f}$ s".format(tau))
-    ax.set(xscale="log", yscale="log", xlabel=r"$L$", ylabel=r"$C_N$", title="AKPR SHP-1 model for 6F")
+    ax.set(xscale="log", yscale="log", xlabel=r"$L$", ylabel=r"$C_N$", title="Revised AKPR model for 6F")
     ax.legend(loc="lower right")
     ax.annotate(r"Best $k_I, m, f$ : $({}, {}, {})$".format(*best_kmf) + "\n"
                 + r"Best $\varphi$ : " + "{:.3f}\n".format(pvec[0])
@@ -692,7 +682,7 @@ if __name__ == "__main__":
         )
 
     
-    ### Model comparison, SHP-1 vs 6F
+    ### Model comparison, revised AKPR vs 6F
     folder_graphs = os.path.join("..", "figures", "model_comparison")
     cost_args = []
     # Get other cost function arguments.

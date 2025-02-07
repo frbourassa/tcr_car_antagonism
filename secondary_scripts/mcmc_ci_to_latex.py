@@ -16,7 +16,7 @@ if not "../" in sys.path:
 from mcmc.mcmc_analysis import find_best_grid_point
 
 def percentile_symbol(p, place=-1):
-    """ Given a percentile p, generate a math tex string with a shorthand
+    r""" Given a percentile p, generate a math tex string with a shorthand
     symbol for percentiles. Currently using format $P_{{p}\%}$ """
     # Round p as indicated
     if place > 0:
@@ -29,15 +29,15 @@ def percentile_symbol(p, place=-1):
 
 
 def ci_symbol(p, place=-1):
-    """ Given a percentile p, generate a math tex string with a shorthand
+    r""" Given a percentile p, generate a math tex string with a shorthand
     symbol for CI limits. Currently using format $CI_{{p}\%}$ """
     # Round p as indicated
     if place > 0:
         pr = round(p, place)
-        s = "$\mathrm{CI}_{" + f"{pr:.{place}f}" + r"\%}$"
+        s = r"$\mathrm{CI}_{" + f"{pr:.{place}f}" + r"\%}$"
     else:
         pr = int(p)
-        s = "$\mathrm{CI}_{" + str(pr) + r"\%}$"
+        s = r"$\mathrm{CI}_{" + str(pr) + r"\%}$"
     return s
 
 
@@ -102,7 +102,7 @@ def color_best_outside_ci(row, clr="D0D0D0"):
     table, to make the cell a certain hexadecimal color clr.
     """
     if row.iat[1] < row.iat[0] or row.iat[1] > row.iat[2]:
-        prefix = "\cellcolor[HTML]{" + str(clr) + "}"
+        prefix = r"\cellcolor[HTML]{" + str(clr) + "}"
     else:
         prefix = ""
     return prefix
@@ -110,6 +110,9 @@ def color_best_outside_ci(row, clr="D0D0D0"):
 
 def format_float(v, rd):
     """ v is the value, rd is the number of decimal places """
+    if (isinstance(rd, np.ndarray) or isinstance(rd, pd.Series)
+        or isinstance(rd, pd.DataFrame) or isinstance(rd, list)):
+        rd = rd[0]
     rdint = int(rd)
     return "$" + f"{v:.{rdint}f}" + "$"
 
@@ -198,6 +201,7 @@ def write_tex_table(df, df_round, filename, filter_row, format_value, block_lvl)
     lines[-1].strip("\n")
     f.writelines(lines)
     f.close()
+    print("Wrote table to {}".format(filename))
     return 0
 
 
