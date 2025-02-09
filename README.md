@@ -1,6 +1,6 @@
-# Theoretical modelling for TCR/CAR interactions
+# Theoretical modeling for TCR/CAR interactions
 
-Repository for the code related to mathematical modelling and parameter estimation in the paper
+Repository for the code related to mathematical modeling and parameter estimation in the paper
 
 > Taisuke Kondo<sup>=</sup>, François X. P. Bourassa<sup>=</sup>, Sooraj R. Achar<sup>=</sup>, 
 J. DuSold, P. F. Céspedes, M. Ando, A. Dwivedi, J. Moraly,
@@ -90,7 +90,7 @@ Lastly, see `secondary_scripts/universal_antagonism_basic_cell_lines.ipynb` for 
 
 ### Model predictions in various cell types
 
-The core modelling results in Figures 2, 3, 5, and S2 stem from the MCMC scripts and the `universal_antagonism...` notebooks. In addition to these analyses, we used model predictions to motivate experiments in figures 4, 6, S3, S5, and S6. These are mainly applications of the model to various tumor and T cell lines, based on the experimental calibration of antigen and receptor levels on these cell types ([described below](#ligands)). These predictions are generated in the notebook `tcr_car_further_model_predictions.ipynb` for 
+The core modeling results in Figures 2, 3, 5, and S2 stem from the MCMC scripts and the `universal_antagonism...` notebooks. In addition to these analyses, we used model predictions to motivate experiments in figures 4, 6, S3, S5, and S6. These are mainly applications of the model to various tumor and T cell lines, based on the experimental calibration of antigen and receptor levels on these cell types ([described below](#ligands)). These predictions are generated in the notebook `tcr_car_further_model_predictions.ipynb` for 
 
 - B16-CD19 tumors (Fig. 4);
 - SMARTA CAR T cells (CD4+) (Fig. S3);
