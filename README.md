@@ -2,8 +2,8 @@
 
 Repository for the code related to mathematical modelling and parameter estimation in the paper
 
-> Taisuke Kondo<sup>=</sup>, François X. P. Bourassa<sup>=</sup>, Sooraj R. Achar<sup>=</sup>, J.
-DuSold, P. F. Céspedes, M. Ando, A. Dwivedi, J. Moraly,
+> Taisuke Kondo<sup>=</sup>, François X. P. Bourassa<sup>=</sup>, Sooraj R. Achar<sup>=</sup>, 
+J. DuSold, P. F. Céspedes, M. Ando, A. Dwivedi, J. Moraly,
 C. Chien, S. Majdoul, A. L. Kenet, M. Wahlsten, A.
 Kvalvaag, E. Jenkins, S. P. Kim, C. M. Ade, Z. Yu,
 G. Gaud, M. Davila, P. Love, J. C. Yang, M. Dustin,
@@ -14,7 +14,7 @@ _Cell_ [accepted in principle], 2025.<br> _(<sup>=</sup>: these authors contribu
 We developed mathematical models to quantitatively predict TCR and CAR cross-receptor interactions in CAR T cells and compare to experimental data. 
 
 The necessary datasets and model results files are hosted on Zenodo:
-> [Zenodo repository link](https://zenodo.org/)
+> [Zenodo repository link](https://doi.org/10.5281/zenodo.14837936)
 
 
 
@@ -27,9 +27,9 @@ The necessary datasets and model results files are hosted on Zenodo:
 
 **Step 2**: __Download the data and code results at:__
 <a name="zenodo"> </a>
-> [Zenodo repository link](https://zenodo.org/).
+> [Zenodo repository link](https://doi.org/10.5281/zenodo.14837936).
 
-and place them in the main folder of this repository to replace the empty  `results/`, `data/`, and `figures` folders. 
+and unzip the three compressed folders (`results.zip`, `figures.zip`, `data.zip`) , then place them in the main folder of this cloned repository to replace the empty  `results/`, `data/`, and `figures` folders. 
 
 **Step 3**: Install the required packages (listed below). 
 
@@ -129,7 +129,7 @@ Original MCMC samples are provided in the data repository, so this part is optio
 
 The order matters, as TCR/TCR model fits need to be generated and analyzed before TCR/CAR simulations are launched. These MCMC scripts should take in total 12-24h to run on a desktop computer or small computational cluster with multiple CPU cores. You can launch test runs first by lowering the simulation length, `n_steps`, in the `__main__` of these scripts. 
 
-The script `run_mcmc_withpriors.py` runs all MCMC simulations for an alternate choice of parameter priors $P(\theta)$ -- log-normal distributions centered on the original AKPR model parameters, with variances picked based on the previous simulations. These alternate simulations were not used in the main paper but were run to show that better solutions have not been ignored by the biologically plausible parameter boundaries we picked.  
+The script `run_mcmc_withpriors.py` runs all MCMC simulations for an alternate choice of parameter priors $P(\theta)$ -- log-normal distributions centered on the original AKPR model parameters, with variances picked based on the previous simulations. These alternate simulations were not used in the paper but were run to show that better solutions have not been ignored by the biologically plausible parameter boundaries we picked.  The Zenodo repository contains figures and analysis results produced by these simulations (but not the full MCMC chains, since these are large files). 
 
 The model fits and predictions of antagonism data in OT-1 T cells are part of the MCMC simulation results. The scripts `analyze_mcmc_tcr_tcr.py` (Figure 2) and `analyze_mcmc_tcr_car.py` (Figure 3) generate model fits and predictions plots for each $(k, m, f)$ over which the grid search is performed. The final figures in the paper are for the $(k, m, f)$ providing the best fit. 
 - For TCR/TCR fits and parameter distributions (Figures 2 and S2): `figures/mcmc_shp1` (classical model), `figures/mcmc_akpr_i` (revised AKPR model),  `figures/mcmc_tcr_tcr_6f/` (revised AKPR for 6F T cells);
@@ -145,19 +145,22 @@ The Jupyter notebook `secondary_scripts/tcr_car_invivo_predictions.ipynb` shows 
 
 ### Reproducing final figures from the paper
 
-Jupyter notebooks generating published figure panels related to the model are provided in the `plotting_final/` folder. It relies on some plotting scripts in `plotting_final/scripts/` and on various data and output files which are part of the [data and results Zenodo repository](#zenodo). The panels are saved in subfolders within `plotting_final/`. This code is essentially taking care of aesthetic plotting details; no new analyses are performed therein. 
+Jupyter notebooks generating published figure panels related to the model are provided in the `plotting_final/` folder. This code is essentially taking care of aesthetic plotting details; no new analyses are performed therein. It relies on some plotting scripts in `plotting_final/scripts/` and on various data and output files which are part of the [data and results Zenodo repository](#zenodo). The panels are saved in subfolders within `plotting_final/`. We did not include these final plots in the Zenodo repository because, well, they are in the paper. 
 
 Two scripts in `secondary_scripts`, `mcmc_ci_to_latex.py` and `print_dataset_sizes.py`, generate text outputs used for supplementary tables. 
 
 ## Authors and acknowledgments
 
-We acknowledge the full list of authors who contributed to the work presented in the paper (see above). 
+We acknowledge the full list of authors who contributed to the work presented in the paper and collected the experimental data (see above). 
 
-Main author of the theory-related code: **François X. P. Bourassa** (https://orcid.org/0000-0002-2757-5870), with important contributions from **Sooraj R. Achar** in data analysis and plotting scripts, and with supervision from **Paul François** and **Grégoire Altan-Bonnet**. 
+Main author of the theory-related code: **François X. P. Bourassa** (https://orcid.org/0000-0002-2757-5870), with important contributions from **Sooraj R. Achar** (https://orcid.org/0000-0003-3425-7501) in data analysis and plotting scripts, and with supervision from **Naomi Taylor**, **Grégoire Altan-Bonnet**, and **Paul François**. 
+**Taisuke Kondo**, **Sooraj Achar**, and other authors performed the experiments on which the theoretical analyses relied. 
 
 
 ## License
-BSD-3-Clause
+Code: BSD-3-Clause
+
+Data on the separate Zenodo repository: CC-BY-4.0
 
 ## Badges
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.5758439.svg)](https://doi.org/10.5281/zenodo.5758439)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14837936.svg)](https://doi.org/10.5281/zenodo.14837936)
