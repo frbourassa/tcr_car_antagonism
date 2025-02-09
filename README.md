@@ -163,4 +163,8 @@ Code: BSD-3-Clause
 Data on the separate Zenodo repository: CC-BY-4.0
 
 ## Badges
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14837936.svg)](https://doi.org/10.5281/zenodo.14837936)
+Code Zenodo:
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14838282.svg)](https://doi.org/10.5281/zenodo.14838282)
+
+Data Zenodo:
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14837935.svg)](https://doi.org/10.5281/zenodo.14837935)
